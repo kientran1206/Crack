@@ -43,8 +43,8 @@ async def background_scanner_loop():
             # Scan strictly real orderbooks
             opps = await engine.scan_once()
             
-            # Auto-Execute on profitable verified spreads
-            for opp in opps:
+            # Auto-Execute on the top best profitable verified spread per cycle (Avoids capital churn)
+            for opp in opps[:1]:
                 if opp.est_net_profit >= CONFIG.MIN_PROFIT_HURDLE_USDC:
                     engine.execute_paper_trade(opp)
 

@@ -16,6 +16,7 @@ class TelegramNotifier:
         self.bot_token = bot_token or os.getenv("TELEGRAM_BOT_TOKEN", "")
         self.chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID", "")
         self.client = httpx.AsyncClient(timeout=10.0)
+        self.last_notify_ts: float = 0.0
 
     @property
     def is_configured(self) -> bool:
@@ -42,7 +43,12 @@ class TelegramNotifier:
             return False
 
     async def notify_trade_executed(self, trade_info: dict):
-        """Send instant alert when an arbitrage trade is filled."""
+        """Send instant alert when an arbitrage trade is filled (throttled to avoid 429 spam)."""
+        now = time.time()
+        if now - self.last_notify_ts < 15.0:
+            return  # Throttle to max 1 Telegram notification per 15s to keep UI responsive
+        self.last_notify_ts = now
+
         msg = (
             f"🔔 <b>[V] KÈO ARBITRAGE VỪA KHỚP TỰ ĐỘNG!</b>\n\n"
             f"🎯 <b>Thị trường:</b> {trade_info.get('market')}\n"
