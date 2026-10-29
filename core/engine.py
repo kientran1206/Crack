@@ -300,7 +300,10 @@ class QuantitativeArbitrageEngine:
         return discovered_opps
 
     def execute_paper_trade(self, opp: Opportunity) -> bool:
-        """Execute verified real-data opportunity within virtual ledger atomically."""
+        """
+        Execute trade with REALISTIC holding period.
+        Capital is escrowed in locked_balance; it does NOT settle instantly.
+        """
         total_required = opp.gross_cost + opp.est_fees + opp.est_gas
         
         if not self.ledger.reserve_capital(opp.opp_id, total_required):
@@ -322,23 +325,15 @@ class QuantitativeArbitrageEngine:
             gas_paid=opp.est_gas,
             net_pnl=opp.est_net_profit,
             roi_pct=((opp.est_net_profit / opp.gross_cost) * Decimal("100")).quantize(Decimal("0.01")),
-            status="SETTLED"
+            status="LOCKED_IN_MATCH" # Realistic: Capital remains locked until fixture completes
         )
 
-        self.ledger.commit_settlement(
-            opp_id=opp.opp_id,
-            gross_cost=opp.gross_cost,
-            payout=payout,
-            fees_paid=opp.est_fees,
-            gas_paid=opp.est_gas,
-            trade_record=trade_record
-        )
-        opp.status = TradeStatus.SETTLED
-        
+        # Do NOT settle instantly! Capital remains locked in active_reservations
+        # Only settle in background when match finishes (e.g. simulated after 15-90 mins)
         self.log(
-            f"REAL ARB EXECUTED [{trade_record.trade_id}]: {opp.market_title} | "
-            f"In: ${opp.gross_cost:.2f} | Net: +${opp.est_net_profit:.3f} | "
-            f"Balance: ${self.ledger.total_balance:.2f} USDC"
+            f"VÉ CƯỢC ĐÃ VÀO VỐN [{trade_record.trade_id}]: {opp.market_title} | "
+            f"Vốn khóa: ${opp.gross_cost:.2f} | Chờ kết thúc trận... | "
+            f"Khả dụng: ${self.ledger.free_balance:.2f} USDC"
         )
 
         if self.telegram.is_configured:
@@ -348,7 +343,7 @@ class QuantitativeArbitrageEngine:
                 "entry_cost": float(opp.gross_cost),
                 "net_pnl": float(opp.est_net_profit),
                 "roi_pct": float(trade_record.roi_pct),
-                "new_balance": float(self.ledger.total_balance),
+                "new_balance": float(self.ledger.free_balance),
                 "timestamp": trade_record.timestamp_iso
             }))
 
