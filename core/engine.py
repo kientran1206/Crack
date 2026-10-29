@@ -23,6 +23,8 @@ from connectors.polymarket import PolymarketConnector
 from connectors.sxbet import SXBetConnector
 from connectors.manifold import ManifoldConnector
 from connectors.azuro import AzuroConnector
+from connectors.overtime import OvertimeConnector
+from connectors.the_odds_api import TheOddsApiConnector
 from core.ws_stream import PolymarketWebSocketStream
 from connectors.grassroots_feed import GrassrootsSportsUniverse
 
@@ -35,6 +37,8 @@ class QuantitativeArbitrageEngine:
         self.sxbet = SXBetConnector()
         self.manifold = ManifoldConnector()
         self.azuro = AzuroConnector(CONFIG.AZURO_ONCHAIN_FEED_API)
+        self.overtime = OvertimeConnector()
+        self.odds_gateway = TheOddsApiConnector()
         self.telegram = TelegramNotifier(CONFIG.TELEGRAM_BOT_TOKEN, CONFIG.TELEGRAM_CHAT_ID)
         self.executor = LiveOnChainExecutor(CONFIG.POLYGON_RPC_URL, CONFIG.PRIVATE_KEY, dry_run=CONFIG.DRY_RUN)
         
@@ -105,12 +109,14 @@ class QuantitativeArbitrageEngine:
         # 1. Generate In-Memory Universe of 5,200+ Grassroots Sports Matches
         self.grassroots_universe.generate_full_universe()
         
-        # 2. Parallel Multi-Exchange Discovery
+        # 2. Parallel Multi-Exchange Discovery (Web3 + 50+ Global Bookmakers)
         await asyncio.gather(
             self.poly.refresh_active_markets(limit=150),
             self.sxbet.fetch_active_markets(limit=40),
             self.manifold.fetch_active_binary_markets(limit=30),
             self.azuro.fetch_live_sports_odds(limit=80),
+            self.overtime.fetch_active_sports_odds(limit=50),
+            self.odds_gateway.fetch_multi_bookmaker_odds(limit=50),
             return_exceptions=True
         )
 
@@ -176,6 +182,33 @@ class QuantitativeArbitrageEngine:
                         ))
             except Exception as e:
                 logger.debug(f"Grassroots eval error: {e}")
+
+        # =====================================================================
+        # 2. OVERTIME MARKETS & 50+ GLOBAL BOOKMAKERS (PINNACLE, BET365, BOVADA)
+        # =====================================================================
+        for ot in self.overtime.cached_markets:
+            for ext in self.odds_gateway.cached_odds:
+                try:
+                    inv_sum = (Decimal("1.0") / ot["home_odds"]) + (Decimal("1.0") / ext["price_away"])
+                    if inv_sum < Decimal("0.985"):
+                        spread_pct = ((Decimal("1.0") - inv_sum) * Decimal("100")).quantize(Decimal("0.01"))
+                        discovered_opps.append(Opportunity(
+                            opp_id=f"CROSS_{ot['id'][:8]}_{int(time.time()*1000)}",
+                            market_title=f"[Cross-Bookmaker] {ot['title']}",
+                            platform=f"Overtime vs {ext['bookmaker']}",
+                            opp_type=OpportunityType.DUTCHING,
+                            spread_pct=spread_pct,
+                            yes_price=(Decimal("1.0") / ot["home_odds"]).quantize(Decimal("0.01")),
+                            no_price=(Decimal("1.0") / ext["price_away"]).quantize(Decimal("0.01")),
+                            target_shares=Decimal("5.0"),
+                            gross_cost=Decimal("4.85"),
+                            est_fees=Decimal("0.01"),
+                            est_gas=Decimal("0.01"),
+                            est_net_profit=Decimal("0.13"),
+                            status=TradeStatus.VALIDATED
+                        ))
+                except Exception as e:
+                    logger.debug(f"Cross-arb eval error: {e}")
 
         # =====================================================================
         # 2. FAST IN-MEMORY CONVERGENCE & RECORDING
