@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Tuple
 class OpportunityType(str, Enum):
     INTERNAL_BUNDLE = "INTERNAL_BUNDLE"  # YES + NO < 1.00 on Polymarket
     CROSS_MARKET = "CROSS_MARKET"        # Cross-exchange spread (Polymarket vs Azuro)
+    DUTCHING = "DUTCHING"                # Multi-bookmaker Grassroots & Asian Dutching Arbitrage
 
 class TradeStatus(str, Enum):
     DETECTED = "DETECTED"
