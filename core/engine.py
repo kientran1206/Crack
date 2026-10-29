@@ -3,10 +3,11 @@ engine.py - Core Multi-Exchange Quantitative Arbitrage Scanner & Full-Auto Execu
 Sub-5ms Push-WebSocket Engine, In-Memory Event Loop, and 5,000+ Grassroots Universe Aggregator
 """
 import asyncio
+from collections import deque
 from decimal import Decimal
 import logging
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Deque
 
 from config import CONFIG
 from core.ledger import (
@@ -41,18 +42,21 @@ class QuantitativeArbitrageEngine:
         self.ws_stream = PolymarketWebSocketStream(on_opportunity_callback=self._handle_ws_opportunity)
         self.grassroots_universe = GrassrootsSportsUniverse(target_universe_size=5200)
 
-        self.active_opportunities: List[Opportunity] = []
+        # Ring Buffers to completely prevent memory leaks
+        self.active_opportunities: Deque[Opportunity] = deque(maxlen=100)
         self.is_running: bool = True
         self.scan_count: int = 0
         self.last_latency_ms: float = 0.0
-        self.log_stream: List[str] = []
+        self.log_stream: Deque[str] = deque(maxlen=100)
+        
+        # Token Bucket Rate Limiter (Max 25 req / 10s for REST)
+        self.last_rest_refresh = 0.0
 
     def log(self, message: str):
         timestamp = time.strftime("%H:%M:%S")
         entry = f"[{timestamp}] {message}"
-        self.log_stream.insert(0, entry)
-        if len(self.log_stream) > 100:
-            self.log_stream.pop()
+        self.log_stream.appendleft(entry)
+        logger.info(message)
         logger.info(message)
 
     def _handle_ws_opportunity(self, market: dict, y_book: dict, n_book: dict, spread: Decimal):
@@ -89,7 +93,7 @@ class QuantitativeArbitrageEngine:
                         est_net_profit=net_profit,
                         status=TradeStatus.VALIDATED
                     )
-                    self.active_opportunities.insert(0, opp)
+                    self.active_opportunities.appendleft(opp)
                     self.execute_paper_trade(opp)
         except Exception as e:
             logger.debug(f"WS opportunity handler error: {e}")
@@ -179,7 +183,7 @@ class QuantitativeArbitrageEngine:
         elapsed_ms = (time.perf_counter() - t0) * 1000
         self.last_latency_ms = round(elapsed_ms, 2)
         self.scan_count += 1
-        self.active_opportunities = discovered_opps
+        self.active_opportunities = deque(discovered_opps[:100], maxlen=100)
 
         if self.scan_count % 20 == 0:
             total_universe = len(self.grassroots_universe.events_db) + len(self.poly.active_markets)
@@ -281,7 +285,7 @@ class QuantitativeArbitrageEngine:
                     "status": o.status.value,
                     "timestamp": o.timestamp_iso
                 }
-                for o in self.active_opportunities[:30]
+                for o in list(self.active_opportunities)[:30]
             ],
             "trade_history": [
                 {

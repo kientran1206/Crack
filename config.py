@@ -56,6 +56,6 @@ class EngineConfig:
     # Server / Dashboard
     DASHBOARD_HOST: str = os.getenv("DASHBOARD_HOST", "0.0.0.0")
     DASHBOARD_PORT: int = int(os.getenv("PORT", os.getenv("DASHBOARD_PORT", "8888")))
-    SCAN_INTERVAL_SECONDS: float = 0.5
+    SCAN_INTERVAL_SECONDS: float = float(os.getenv("SCAN_INTERVAL_SECONDS", "0.2"))
 
 CONFIG = EngineConfig()
