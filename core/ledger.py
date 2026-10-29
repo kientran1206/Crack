@@ -55,6 +55,8 @@ class Opportunity:
     est_net_profit: Decimal
     status: TradeStatus = TradeStatus.DETECTED
     timestamp_iso: str = field(default_factory=lambda: time.strftime("%Y-%m-%d %H:%M:%S"))
+    url: str = ""
+    horizon: str = ""
 
 @dataclass
 class TradeRecord:

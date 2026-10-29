@@ -49,14 +49,20 @@ class TelegramNotifier:
             return  # Throttle to max 1 Telegram notification per 15s to keep UI responsive
         self.last_notify_ts = now
 
+        horizon = trade_info.get('horizon', 'Real-Time Orderbook')
+        url = trade_info.get('url', '')
+        link_str = f"\n🔗 <b>Kiểm chứng sàn:</b> <a href=\"{url}\">Mở trang thị trường</a>" if url else ""
+
         msg = (
             f"🔔 <b>[V] KÈO ARBITRAGE VỪA KHỚP TỰ ĐỘNG!</b>\n\n"
             f"🎯 <b>Thị trường:</b> {trade_info.get('market')}\n"
+            f"⏱️ <b>Kỳ hạn thi đấu:</b> <code>{horizon}</code>\n"
             f"⚡ <b>Chiến lược:</b> {trade_info.get('strategy')}\n"
             f"💵 <b>Vốn vào lệnh:</b> ${trade_info.get('entry_cost'):.2f} USDC\n"
             f"💰 <b>Lãi ròng ăn chắc:</b> +${trade_info.get('net_pnl'):.3f} USDC (ROI: +{trade_info.get('roi_pct'):.2f}%)\n"
-            f"📊 <b>Số dư ví mới:</b> <b>${trade_info.get('new_balance'):.2f} USDC</b>\n"
-            f"⏰ <i>Thời gian: {trade_info.get('timestamp')}</i>"
+            f"📊 <b>Số dư khả dụng:</b> <b>${trade_info.get('new_balance'):.2f} USDC</b>\n"
+            f"⏰ <i>Thời gian tick: {trade_info.get('timestamp')}</i>"
+            f"{link_str}"
         )
         await self.send_message(msg)
 

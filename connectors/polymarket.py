@@ -6,6 +6,7 @@ import asyncio
 from decimal import Decimal
 import json
 import logging
+import time
 from typing import Dict, List, Optional
 import httpx
 from core.ledger import MarketDepth, OrderBookLevel
@@ -24,13 +25,19 @@ class PolymarketConnector:
         self.active_markets: List[Dict] = []
 
     async def refresh_active_markets(self, limit: int = 150) -> List[Dict]:
-        """Fetch active binary markets with both YES and NO tokens from Gamma API."""
+        """
+        Fetch active real-world markets across ALL horizons (Near-Term, Mid-Term, Far-Dated)
+        including Sports (Europa League, Champions League, Premier League, NBA) and World Events.
+        """
         url = f"{self.gamma_api}/markets?limit={limit}&active=true&closed=false"
+        sports_url = f"{self.gamma_api}/events?tag_id=100626&closed=false&limit=40"
+        now = time.time()
+        pairs = []
+
         try:
             resp = await self.client.get(url)
             if resp.status_code == 200:
                 raw = resp.json()
-                pairs = []
                 for m in raw:
                     clob_ids = m.get("clobTokenIds")
                     if isinstance(clob_ids, str):
@@ -40,20 +47,69 @@ class PolymarketConnector:
                             continue
                     
                     if clob_ids and len(clob_ids) >= 2:
+                        end_date_str = m.get("endDate", "") or ""
+                        # Calculate horizon
+                        horizon_tag = "[Kèo Dài Hạn / Futures]"
+                        if end_date_str:
+                            try:
+                                import datetime
+                                ed = datetime.datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
+                                diff_days = (ed.timestamp() - now) / 86400.0
+                                if diff_days <= 1.0:
+                                    horizon_tag = "[Hôm Nay / 24h]"
+                                elif diff_days <= 7.0:
+                                    horizon_tag = f"[Tuần Này / {int(diff_days)} ngày]"
+                                else:
+                                    horizon_tag = f"[Dài Hạn / {int(diff_days)} ngày]"
+                            except Exception:
+                                pass
+
                         pairs.append({
                             "id": m.get("id"),
                             "question": m.get("question"),
                             "slug": m.get("slug"),
+                            "url": f"https://polymarket.com/event/{m.get('slug')}",
                             "condition_id": m.get("conditionId"),
                             "yes_token": str(clob_ids[0]),
                             "no_token": str(clob_ids[1]),
-                            "volume": float(m.get("volume", 0) or 0)
+                            "volume": float(m.get("volume", 0) or 0),
+                            "end_date": end_date_str,
+                            "horizon_tag": horizon_tag
                         })
-                # Sort by volume descending for active trading interest
-                pairs.sort(key=lambda x: x["volume"], reverse=True)
-                self.active_markets = pairs
-                logger.info(f"Loaded {len(self.active_markets)} active Polymarket binary conditions.")
-                return self.active_markets
+            
+            # Also fetch real Europa League and Sports Events across dates
+            s_resp = await self.client.get(sports_url)
+            if s_resp.status_code == 200:
+                s_events = s_resp.json()
+                for ev in s_events:
+                    ev_title = ev.get("title", "")
+                    ev_slug = ev.get("slug", "")
+                    ev_end = ev.get("endDate", "")
+                    for sm in ev.get("markets", []):
+                        s_clob = sm.get("clobTokenIds")
+                        if isinstance(s_clob, str):
+                            try:
+                                s_clob = json.loads(s_clob)
+                            except Exception:
+                                continue
+                        if s_clob and len(s_clob) >= 2:
+                            pairs.append({
+                                "id": sm.get("id"),
+                                "question": f"{ev_title}: {sm.get('question')}",
+                                "slug": ev_slug or sm.get("slug"),
+                                "url": f"https://polymarket.com/event/{ev_slug}",
+                                "condition_id": sm.get("conditionId"),
+                                "yes_token": str(s_clob[0]),
+                                "no_token": str(s_clob[1]),
+                                "volume": float(sm.get("volume", 0) or 0),
+                                "end_date": ev_end,
+                                "horizon_tag": "[Cúp Châu Âu / Pre-Match]"
+                            })
+
+            pairs.sort(key=lambda x: x["volume"], reverse=True)
+            self.active_markets = pairs
+            logger.info(f"Loaded {len(self.active_markets)} active real markets across all horizons.")
+            return self.active_markets
         except Exception as e:
             logger.error(f"Failed to refresh markets from Gamma API: {e}")
         return self.active_markets

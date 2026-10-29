@@ -324,7 +324,9 @@ class QuantitativeArbitrageEngine:
                 "net_pnl": float(opp.est_net_profit),
                 "roi_pct": float(trade_record.roi_pct),
                 "new_balance": float(self.ledger.free_balance),
-                "timestamp": trade_record.timestamp_iso
+                "timestamp": trade_record.timestamp_iso,
+                "horizon": opp.horizon,
+                "url": opp.url
             }))
 
         return True
