@@ -162,4 +162,24 @@ def test_vectorized_microsecond_scan_benchmark():
     elapsed_ms = (t1 - t0) * 1000.0
     print(f"\n[BENCHMARK] Evaluated {len(universe.events_db)} fixtures in {elapsed_ms:.2f} ms")
     assert len(universe.events_db) >= 5000
-    assert elapsed_ms < 150.0 # Under 150ms in pure Python, well within real-time SLA
+    assert elapsed_ms < 150.0
+
+# TC-07: Telemetry Snapshot & Dashboard Render Regression Test
+def test_telemetry_snapshot_and_dashboard_render():
+    from core.engine import QuantitativeArbitrageEngine
+    from core.telegram_bot import TelegramCommandHandler
+    
+    ledger = VirtualStateLedger(Decimal("10.00"), Decimal("0.25"), Decimal("0.005"))
+    engine = QuantitativeArbitrageEngine(ledger=ledger)
+    engine.log("Test log entry 1")
+    engine.log("Test log entry 2")
+    
+    # Must not raise TypeError when slicing deque
+    snap = engine.get_telemetry_snapshot()
+    assert len(snap["log_stream"]) >= 2
+    assert "metrics" in snap
+    
+    bot = TelegramCommandHandler(engine=engine, executor=engine.executor, ledger=ledger)
+    dashboard_text = bot.render_dashboard_text()
+    assert "VANTA // QUANTITATIVE CONTROL CENTER" in dashboard_text
+    assert len(dashboard_text) > 200

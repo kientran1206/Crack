@@ -191,11 +191,12 @@ class TelegramCommandHandler:
         self.is_running = True
         logger.info("Telegram Command Handler v2.2 listening for dj's orders 24/7...")
 
-        # Register Native Command Menu
-        await self.register_native_commands()
-
-        # Send initial Interactive Dashboard
-        await self.send_message(self.render_dashboard_text(), reply_markup=self.get_dashboard_markup())
+        # Register Native Command Menu & Initial Greeting safely
+        try:
+            await self.register_native_commands()
+            await self.send_message(self.render_dashboard_text(), reply_markup=self.get_dashboard_markup())
+        except Exception as e:
+            logger.error(f"Error in initial telegram greeting: {e}", exc_info=True)
 
         while self.is_running:
             try:

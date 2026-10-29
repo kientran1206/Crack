@@ -302,7 +302,7 @@ class QuantitativeArbitrageEngine:
                 }
                 for t in self.ledger.trades[:50]
             ],
-            "log_stream": self.log_stream[:30],
+            "log_stream": list(self.log_stream)[:30],
             "system_status": {
                 "is_running": self.is_running,
                 "mode": "DRY-RUN (PAPER)" if self.executor.dry_run else "LIVE ON-CHAIN",

@@ -65,11 +65,13 @@ async def main():
     logger.info(f"Binding internal telemetry port on {CONFIG.DASHBOARD_HOST}:{CONFIG.DASHBOARD_PORT}")
     
     # 1. Background Scanner Task
-    scanner_task = asyncio.create_task(background_scanner_loop())
+    scanner_task = asyncio.create_task(background_scanner_loop(), name="ScannerLoop")
+    scanner_task.add_done_callback(lambda t: logger.error(f"ScannerLoop terminated: {t.exception()}") if not t.cancelled() and t.exception() else None)
     
     # 2. Interactive 2-Way Telegram Bot Poller
     telegram_bot = TelegramCommandHandler(engine=engine, executor=engine.executor, ledger=ledger)
-    telegram_task = asyncio.create_task(telegram_bot.start_polling())
+    telegram_task = asyncio.create_task(telegram_bot.start_polling(), name="TelegramPoller")
+    telegram_task.add_done_callback(lambda t: logger.error(f"TelegramPoller terminated: {t.exception()}") if not t.cancelled() and t.exception() else None)
     
     # 3. Notify dj on Telegram that new cloud runner is ONLINE
     if engine.telegram.is_configured:
