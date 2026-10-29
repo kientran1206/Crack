@@ -1,0 +1,66 @@
+name: Vanta Arbitrage Bot 24/7
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Permanent safety net every 5 hours
+    - cron: '0 */5 * * *'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/**'
+      - 'core/**'
+      - 'connectors/**'
+      - 'run_actions.py'
+      - 'config.py'
+      - 'requirements.txt'
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: vanta-247-runner
+  cancel-in-progress: true
+
+jobs:
+  arbitrage-engine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 345 # 5 hours 45 minutes
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Arbitrage & Telegram Engine
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
+          POLYGON_RPC_URL: ${{ secrets.POLYGON_RPC_URL }}
+          DRY_RUN: ${{ secrets.DRY_RUN }}
+          DASHBOARD_HOST: 0.0.0.0
+          DASHBOARD_PORT: 8888
+          RUN_DURATION_SECONDS: 18000
+        run: |
+          python run_actions.py
+
+      - name: Auto-Trigger Next 24/7 Cycle
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Handoff reached. Dispatching next workflow run..."
+          gh workflow run "Vanta Arbitrage Bot 24/7" --ref main || true
