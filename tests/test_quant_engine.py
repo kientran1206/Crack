@@ -183,3 +183,27 @@ def test_telemetry_snapshot_and_dashboard_render():
     dashboard_text = bot.render_dashboard_text()
     assert "VANTA // QUANTITATIVE CONTROL CENTER" in dashboard_text
     assert len(dashboard_text) > 200
+
+# TC-08: Asian Brokerage Smart Order Routing (SOR)
+def test_asian_brokerage_smart_order_routing():
+    from connectors.asian_brokerage import AsianBrokerageGateway
+    broker = AsianBrokerageGateway()
+    odds = asyncio.run(broker.fetch_aggregated_asian_odds(limit=10))
+    assert len(odds) > 0
+    first = odds[0]
+    assert "best_home" in first
+    assert "best_away" in first
+    assert first["best_home"]["bookmaker"] in AsianBrokerageGateway.SUPPORTED_BOOKMAKERS
+    assert first["best_home"]["odds"] >= Decimal("1.80")
+
+# TC-09: BetsAPI Palpable Error and Slip-Spinning Filter
+def test_betsapi_palpable_error_filter():
+    from connectors.betsapi_feed import BetsApiGrassrootsFeed
+    feed = BetsApiGrassrootsFeed()
+    live_events = asyncio.run(feed.fetch_live_grassroots_inplay(limit=15))
+    assert isinstance(live_events, list)
+    for ev in live_events:
+        # Verify no palpable error slips through (Margin must be >= 0.70)
+        inv_sum = (1 / float(ev["odds_1"])) + (1 / float(ev["odds_2"]))
+        assert inv_sum >= 0.70
+        assert ev["bet_delay_seconds"] >= 3

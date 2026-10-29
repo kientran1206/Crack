@@ -25,6 +25,8 @@ from connectors.manifold import ManifoldConnector
 from connectors.azuro import AzuroConnector
 from connectors.overtime import OvertimeConnector
 from connectors.the_odds_api import TheOddsApiConnector
+from connectors.asian_brokerage import AsianBrokerageGateway
+from connectors.betsapi_feed import BetsApiGrassrootsFeed
 from core.ws_stream import PolymarketWebSocketStream
 from connectors.grassroots_feed import GrassrootsSportsUniverse
 
@@ -39,6 +41,8 @@ class QuantitativeArbitrageEngine:
         self.azuro = AzuroConnector(CONFIG.AZURO_ONCHAIN_FEED_API)
         self.overtime = OvertimeConnector()
         self.odds_gateway = TheOddsApiConnector()
+        self.asian_broker = AsianBrokerageGateway()
+        self.betsapi_feed = BetsApiGrassrootsFeed()
         self.telegram = TelegramNotifier(CONFIG.TELEGRAM_BOT_TOKEN, CONFIG.TELEGRAM_CHAT_ID)
         self.executor = LiveOnChainExecutor(CONFIG.POLYGON_RPC_URL, CONFIG.PRIVATE_KEY, dry_run=CONFIG.DRY_RUN)
         
@@ -109,7 +113,7 @@ class QuantitativeArbitrageEngine:
         # 1. Generate In-Memory Universe of 5,200+ Grassroots Sports Matches
         self.grassroots_universe.generate_full_universe()
         
-        # 2. Parallel Multi-Exchange Discovery (Web3 + 50+ Global Bookmakers)
+        # 2. Parallel Multi-Exchange Discovery (Web3 + 50+ Global Bookmakers + Asian Brokers + Grassroots)
         await asyncio.gather(
             self.poly.refresh_active_markets(limit=150),
             self.sxbet.fetch_active_markets(limit=40),
@@ -117,6 +121,8 @@ class QuantitativeArbitrageEngine:
             self.azuro.fetch_live_sports_odds(limit=80),
             self.overtime.fetch_active_sports_odds(limit=50),
             self.odds_gateway.fetch_multi_bookmaker_odds(limit=50),
+            self.asian_broker.fetch_aggregated_asian_odds(limit=40),
+            self.betsapi_feed.fetch_live_grassroots_inplay(limit=40),
             return_exceptions=True
         )
 
@@ -211,7 +217,73 @@ class QuantitativeArbitrageEngine:
                     logger.debug(f"Cross-arb eval error: {e}")
 
         # =====================================================================
-        # 2. FAST IN-MEMORY CONVERGENCE & RECORDING
+        # 3. ASIAN BROKERAGE SMART ORDER ROUTING (SBOBET, SINGBET, BETISN)
+        # =====================================================================
+        for af in self.asian_broker.active_fixtures:
+            try:
+                best_h = af["best_home"]
+                best_a = af["best_away"]
+                inv_sum = (Decimal("1.0") / best_h["odds"]) + (Decimal("1.0") / best_a["odds"])
+                if inv_sum < Decimal("0.985"):
+                    spread_pct = ((Decimal("1.0") - inv_sum) * Decimal("100")).quantize(Decimal("0.01"))
+                    alloc = min(self.ledger.free_balance * CONFIG.MAX_RISK_PER_TRADE_PCT, Decimal("50.0"))
+                    if alloc >= CONFIG.MIN_TRADE_NOTIONAL_USDC:
+                        gross_cost = alloc
+                        payout = (alloc / inv_sum).quantize(Decimal("0.01"))
+                        net_profit = (payout - gross_cost).quantize(Decimal("0.01"))
+                        if net_profit >= CONFIG.MIN_PROFIT_HURDLE_USDC:
+                            discovered_opps.append(Opportunity(
+                                opp_id=f"ASIAN_BROKER_{af['fixture_id']}_{int(time.time()*1000)}",
+                                market_title=f"[Asian Brokerage SOR] {af['match']} ({af['market_type']})",
+                                platform=f"{best_h['bookmaker']} vs {best_a['bookmaker']}",
+                                opp_type=OpportunityType.DUTCHING,
+                                spread_pct=spread_pct,
+                                yes_price=(Decimal("1.0") / best_h["odds"]).quantize(Decimal("0.01")),
+                                no_price=(Decimal("1.0") / best_a["odds"]).quantize(Decimal("0.01")),
+                                target_shares=alloc,
+                                gross_cost=gross_cost,
+                                est_fees=Decimal("0.00"),
+                                est_gas=Decimal("0.00"),
+                                est_net_profit=net_profit,
+                                status=TradeStatus.VALIDATED
+                            ))
+            except Exception as e:
+                logger.debug(f"Asian broker arb eval error: {e}")
+
+        # =====================================================================
+        # 4. BETSAPI IN-PLAY GRASSROOTS FEEDS (TT CUP, ITF, U19, REGIONAL)
+        # =====================================================================
+        for gf in self.betsapi_feed.active_inplay_events:
+            try:
+                inv_sum = (Decimal("1.0") / gf["odds_1"]) + (Decimal("1.0") / gf["odds_2"])
+                if inv_sum < Decimal("0.97"): # Edge >= 3% on grassroots
+                    spread_pct = ((Decimal("1.0") - inv_sum) * Decimal("100")).quantize(Decimal("0.01"))
+                    alloc = min(self.ledger.free_balance * CONFIG.MAX_RISK_PER_TRADE_PCT, Decimal("30.0"))
+                    if alloc >= CONFIG.MIN_TRADE_NOTIONAL_USDC:
+                        gross_cost = alloc
+                        payout = (alloc / inv_sum).quantize(Decimal("0.01"))
+                        net_profit = (payout - gross_cost).quantize(Decimal("0.01"))
+                        if net_profit >= CONFIG.MIN_PROFIT_HURDLE_USDC:
+                            discovered_opps.append(Opportunity(
+                                opp_id=f"BETSAPI_INPLAY_{gf['feed_event_id'][:12]}_{int(time.time()*1000)}",
+                                market_title=f"[Grassroots In-Play {gf['inplay_minute']}'] {gf['match']} ({gf['league']})"[:65],
+                                platform=gf["bookmaker_source"],
+                                opp_type=OpportunityType.DUTCHING,
+                                spread_pct=spread_pct,
+                                yes_price=(Decimal("1.0") / gf["odds_1"]).quantize(Decimal("0.01")),
+                                no_price=(Decimal("1.0") / gf["odds_2"]).quantize(Decimal("0.01")),
+                                target_shares=alloc,
+                                gross_cost=gross_cost,
+                                est_fees=Decimal("0.00"),
+                                est_gas=Decimal("0.00"),
+                                est_net_profit=net_profit,
+                                status=TradeStatus.VALIDATED
+                            ))
+            except Exception as e:
+                logger.debug(f"BetsApi grassroots eval error: {e}")
+
+        # =====================================================================
+        # 5. FAST IN-MEMORY CONVERGENCE & RECORDING
         # =====================================================================
         elapsed_ms = (time.perf_counter() - t0) * 1000
         self.last_latency_ms = round(elapsed_ms, 2)
@@ -301,6 +373,8 @@ class QuantitativeArbitrageEngine:
                 "active_markets_watched": total_watched,
                 "grassroots_count": super_count + standard_count,
                 "super_grassroots_count": super_count,
+                "asian_broker_markets": len(self.asian_broker.active_fixtures),
+                "betsapi_inplay_markets": len(self.betsapi_feed.active_inplay_events),
                 "ws_status": self.ws_stream.get_status()
             },
             "active_opportunities": [

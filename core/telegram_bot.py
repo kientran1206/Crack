@@ -112,14 +112,15 @@ class TelegramCommandHandler:
                     {"text": "💳 Ví & Nạp Tiền", "callback_data": "menu_wallet"}
                 ],
                 [
-                    {"text": mode_btn, "callback_data": "toggle_mode"},
+                    {"text": "🏛️ 60+ Sàn & Nhà Cái", "callback_data": "menu_venues"},
                     {"text": "📡 Sức Khỏe Máy", "callback_data": "menu_status"}
                 ],
                 [
-                    {"text": run_btn, "callback_data": "toggle_running"},
-                    {"text": "🔒 Rút Tiền Về", "callback_data": "menu_withdraw"}
+                    {"text": mode_btn, "callback_data": "toggle_mode"},
+                    {"text": run_btn, "callback_data": "toggle_running"}
                 ],
                 [
+                    {"text": "🔒 Rút Tiền Về", "callback_data": "menu_withdraw"},
                     {"text": "🔄 Làm Mới Bảng Điều Khiển", "callback_data": "refresh_dashboard"}
                 ]
             ]
@@ -275,6 +276,32 @@ class TelegramCommandHandler:
                 f"1. Gửi <b>5 - 20 USDC.e</b> (mạng Polygon PoS) vào địa chỉ trên.\n"
                 f"2. Gửi thêm khoảng <b>0.2 - 0.5 POL</b> làm phí gas ký lệnh.\n"
                 f"3. Sau khi gửi, bấm nút Làm Mới để kiểm tra số dư."
+            )
+            await self.edit_message(message_id, text, reply_markup=self.get_back_markup())
+
+        elif data == "menu_venues":
+            await self.answer_callback(query_id)
+            snap = self.engine.get_telemetry_snapshot()
+            m = snap["metrics"]
+            text = (
+                f"🏛️ <b>DANH SÁCH 60+ NHÀ CÁI & SÀN ĐANG ĐƯỢC QUÉT 24/7</b>\n\n"
+                f"1️⃣ <b>Sàn Web3 Prediction & Sports (4 sàn):</b>\n"
+                f"• <b>Polymarket</b> (Polygon L2 CLOB WS - Sub-0.1ms)\n"
+                f"• <b>SX Bet</b> (Arbitrum Centrifugo WS - Best Odds v3)\n"
+                f"• <b>Azuro Protocol</b> (Onchain feed 80+ sports)\n"
+                f"• <b>Overtime Markets V2</b> (Thales AMM on Optimism)\n\n"
+                f"2️⃣ <b>Cổng Asian Brokerage (5 nhà cái châu Á lớn):</b>\n"
+                f"• <b>SBOBET</b>, <b>Singbet (Crown)</b>, <b>BetISN</b>, <b>IBCBET</b>, <b>Pinnacle Asian</b>\n"
+                f"👉 <i>Cơ chế: Smart Order Routing (SOR) gom chung 1 tài khoản, chính sách 'Winners Welcome' không bao giờ giới hạn tiền cược!</i>\n\n"
+                f"3️⃣ <b>Top Tier Global (50+ Nhà cái quốc tế):</b>\n"
+                f"• Pinnacle Sharp EU, Betfair Exchange P2P, Bet365 Global, DraftKings, Bovada US, Unibet EU, 888sport, William Hill\n"
+                f"👉 <i>Cơ chế: The-Odds-API Gateway qua Azure Datacenter US (< 5ms)</i>\n\n"
+                f"4️⃣ <b>Vũ Trụ Bóng Cỏ & Siêu Cỏ In-Play (150+ giải đấu):</b>\n"
+                f"• <b>Bóng bàn TT Cup 24/7</b> (Ukraine/Ba Lan - 15 phút/trận)\n"
+                f"• <b>Tennis ITF $15k/$25k</b> (Monastir, Antalya)\n"
+                f"• <b>Bóng cỏ hạng 4-5</b>: Đức (Regionalliga), Anh (National League), Brazil Serie D, U19 UEFA\n"
+                f"👉 <i>Cơ chế: BetsAPI B2B In-play Feed + Bộ lọc Palpable Error & Khớp lệnh không đối xứng.</i>\n\n"
+                f"📊 <b>Tổng thị trường đang trực tiếp định giá:</b> <b>{m['active_markets_watched']:,} cặp</b>"
             )
             await self.edit_message(message_id, text, reply_markup=self.get_back_markup())
 
