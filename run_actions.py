@@ -34,11 +34,17 @@ async def background_scanner_loop():
     while engine.is_running:
         try:
             refresh_counter += 1
-            if refresh_counter >= 30:
+            # Refresh live matchdays and orderbook universe every 150 cycles (~30 seconds)
+            if refresh_counter >= 150:
                 refresh_counter = 0
-                await engine.poly.refresh_active_markets(limit=25)
-                await engine.sxbet.fetch_active_markets(limit=20)
-                await engine.manifold.fetch_active_binary_markets(limit=25)
+                await asyncio.gather(
+                    engine.poly.refresh_active_markets(limit=50),
+                    engine.espn_scoreboard.fetch_live_matchdays(),
+                    engine.asian_broker.fetch_aggregated_asian_odds(limit=30),
+                    engine.betsapi_feed.fetch_live_grassroots_inplay(limit=30),
+                    engine.sxbet.fetch_active_markets(limit=20),
+                    return_exceptions=True
+                )
 
             # Scan strictly real orderbooks
             opps = await engine.scan_once()

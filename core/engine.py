@@ -29,6 +29,7 @@ from connectors.asian_brokerage import AsianBrokerageGateway
 from connectors.betsapi_feed import BetsApiGrassrootsFeed
 from core.ws_stream import PolymarketWebSocketStream
 from connectors.grassroots_feed import GrassrootsSportsUniverse
+from connectors.espn_scoreboard import EspnScoreboardConnector
 
 logger = logging.getLogger("ArbEngine")
 
@@ -43,6 +44,7 @@ class QuantitativeArbitrageEngine:
         self.odds_gateway = TheOddsApiConnector()
         self.asian_broker = AsianBrokerageGateway()
         self.betsapi_feed = BetsApiGrassrootsFeed()
+        self.espn_scoreboard = EspnScoreboardConnector()
         self.telegram = TelegramNotifier(CONFIG.TELEGRAM_BOT_TOKEN, CONFIG.TELEGRAM_CHAT_ID)
         self.executor = LiveOnChainExecutor(CONFIG.POLYGON_RPC_URL, CONFIG.PRIVATE_KEY, dry_run=CONFIG.DRY_RUN)
         
@@ -123,6 +125,7 @@ class QuantitativeArbitrageEngine:
             self.odds_gateway.fetch_multi_bookmaker_odds(limit=50),
             self.asian_broker.fetch_aggregated_asian_odds(limit=40),
             self.betsapi_feed.fetch_live_grassroots_inplay(limit=40),
+            self.espn_scoreboard.fetch_live_matchdays(),
             return_exceptions=True
         )
 
@@ -130,14 +133,15 @@ class QuantitativeArbitrageEngine:
         self.ws_stream.register_markets(self.poly.active_markets)
         asyncio.create_task(self.ws_stream.start())
 
-        total_pairs = len(self.grassroots_universe.events_db) + len(self.poly.active_markets) + len(self.sxbet.cached_markets)
+        total_pairs = len(self.poly.active_markets) + len(self.sxbet.cached_markets) + len(self.espn_scoreboard.cached_fixtures) + len(self.asian_broker.active_fixtures) + len(self.betsapi_feed.active_inplay_events)
         super_count = self.grassroots_universe.stats["super_grassroots"]
         standard_count = self.grassroots_universe.stats["standard_grassroots"]
         semi_count = self.grassroots_universe.stats["semi_grassroots"]
 
         self.log(
-            f"Vũ trụ 5,000+ Kèo Active: {total_pairs} cặp thị trường | "
-            f"Siêu cỏ: {super_count} | Cỏ chuẩn: {standard_count} | Hơi cỏ: {semi_count}. "
+            f"Vũ trụ Kèo Active: {total_pairs} cặp thị trường | "
+            f"ESPN Matchdays: {len(self.espn_scoreboard.cached_fixtures)} trận | "
+            f"Polymarket Real-time: {len(self.poly.active_markets)} cặp | "
             f"Push-WebSocket: RUNNING."
         )
         
@@ -332,9 +336,15 @@ class QuantitativeArbitrageEngine:
         return True
 
     def get_telemetry_snapshot(self) -> dict:
-        total_watched = len(self.grassroots_universe.events_db) + len(self.poly.active_markets) + len(self.sxbet.cached_markets)
-        super_count = self.grassroots_universe.stats.get("super_grassroots", 0)
-        standard_count = self.grassroots_universe.stats.get("standard_grassroots", 0)
+        espn_count = len(self.espn_scoreboard.cached_fixtures)
+        asian_count = len(self.asian_broker.active_fixtures)
+        betsapi_count = len(self.betsapi_feed.active_inplay_events)
+        poly_count = len(self.poly.active_markets)
+        sxbet_count = len(self.sxbet.cached_markets)
+        
+        total_watched = poly_count + sxbet_count + espn_count + asian_count + betsapi_count
+        today_matchdays = sum(1 for m in self.poly.active_markets if "[Hôm Nay" in m.get("horizon_tag", "")) + espn_count
+        
         return {
             "metrics": {
                 "current_balance": float(self.ledger.total_balance),
@@ -348,10 +358,13 @@ class QuantitativeArbitrageEngine:
                 "scan_count": self.scan_count,
                 "latency_ms": self.last_latency_ms,
                 "active_markets_watched": total_watched,
-                "grassroots_count": super_count + standard_count,
-                "super_grassroots_count": super_count,
-                "asian_broker_markets": len(self.asian_broker.active_fixtures),
-                "betsapi_inplay_markets": len(self.betsapi_feed.active_inplay_events),
+                "today_matchdays_count": today_matchdays,
+                "espn_matchdays_count": espn_count,
+                "polymarket_count": poly_count,
+                "grassroots_count": betsapi_count + asian_count,
+                "super_grassroots_count": betsapi_count,
+                "asian_broker_markets": asian_count,
+                "betsapi_inplay_markets": betsapi_count,
                 "ws_status": self.ws_stream.get_status()
             },
             "active_opportunities": [

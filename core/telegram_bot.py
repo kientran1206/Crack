@@ -112,16 +112,19 @@ class TelegramCommandHandler:
                     {"text": "💳 Ví & Nạp Tiền", "callback_data": "menu_wallet"}
                 ],
                 [
-                    {"text": "🏛️ 60+ Sàn & Nhà Cái", "callback_data": "menu_venues"},
-                    {"text": "📡 Sức Khỏe Máy", "callback_data": "menu_status"}
+                    {"text": "📅 Lịch Trận Hôm Nay", "callback_data": "menu_matchdays"},
+                    {"text": "🏛️ 60+ Sàn & Nhà Cái", "callback_data": "menu_venues"}
+                ],
+                [
+                    {"text": "📡 Sức Khỏe Máy", "callback_data": "menu_status"},
+                    {"text": "🔄 Làm Mới", "callback_data": "refresh_dashboard"}
                 ],
                 [
                     {"text": mode_btn, "callback_data": "toggle_mode"},
                     {"text": run_btn, "callback_data": "toggle_running"}
                 ],
                 [
-                    {"text": "🔒 Rút Tiền Về", "callback_data": "menu_withdraw"},
-                    {"text": "🔄 Làm Mới Bảng Điều Khiển", "callback_data": "refresh_dashboard"}
+                    {"text": "🔒 Rút Tiền Về", "callback_data": "menu_withdraw"}
                 ]
             ]
         }
@@ -176,7 +179,7 @@ class TelegramCommandHandler:
             f"📈 <b>Lợi Nhuận Ròng (PnL):</b> <b>+${snap['total_pnl']:.3f} USDC</b> (ROI: +{snap['roi_percent']:.2f}%)\n"
             f"🎯 <b>Hiệu Suất:</b> [{bar}] {wr:.1f}% ({snap['trades_count']} lệnh)\n"
             f"⚡ <b>Độ Trễ In-Memory:</b> <b>{snap['latency_ms']} ms</b> | WS: {ws_badge}\n"
-            f"🌐 <b>Vũ Trụ Theo Dõi:</b> <b>{snap['active_markets_watched']:,} cặp</b> (Siêu cỏ & TT Cup: {super_count:,}+ trận)\n\n"
+            f"🌐 <b>Vũ Trụ Theo Dõi:</b> <b>{snap['active_markets_watched']:,} cặp</b> (Hôm nay: {snap.get('today_matchdays_count', 0):,} trận)\n\n"
             f"👉 <i>Chạm vào các nút bên dưới để điều khiển trực tiếp:</i>"
         )
 
@@ -279,29 +282,52 @@ class TelegramCommandHandler:
             )
             await self.edit_message(message_id, text, reply_markup=self.get_back_markup())
 
+        elif data == "menu_matchdays":
+            await self.answer_callback(query_id)
+            fixtures = self.engine.espn_scoreboard.cached_fixtures
+            poly_today = [m for m in self.engine.poly.active_markets if "[Hôm Nay" in m.get("horizon_tag", "")]
+            
+            lines = [
+                "📅 <b>LỊCH THI ĐẤU THỰC TẾ & TỶ LỆ TRONG NGÀY (GMT+7)</b>",
+                "<i>100% dữ liệu sống từ ESPN Scoreboard & Polymarket 24h Hot</i>\n"
+            ]
+            if fixtures:
+                lines.append("⚽ <b>TRẬN ĐẤU BÓNG ĐÁ & BÓNG RỔ REAL-TIME (ESPN):</b>")
+                for f in fixtures[:7]:
+                    status_icon = "🔴 LIVE" if f["is_live"] else ("🏁 Xong" if f["is_finished"] else "⏳ Sắp đá")
+                    lines.append(f"• <b>[{f['league']}] {f['match']}</b>\n  ⏰ Giờ đá: <code>{f['kickoff_vn']}</code> | {status_icon} ({f['status_detail']})")
+                lines.append("")
+            
+            if poly_today:
+                lines.append(f"🔥 <b>KÈO WEB3 TRONG NGÀY (Polymarket - {len(poly_today)} cặp):</b>")
+                for pm in poly_today[:4]:
+                    lines.append(f"• <a href=\"{pm['url']}\">{pm['question'][:55]}</a>\n  📊 Volume 24h: ${pm['volume']:,.0f}")
+                lines.append("")
+            
+            lines.append("👉 <i>Bot liên tục luân phiên quét sổ lệnh, tự động đào thải trận đã kết thúc!</i>")
+            text = "\n".join(lines)
+            await self.edit_message(message_id, text, reply_markup=self.get_back_markup())
+
         elif data == "menu_venues":
             await self.answer_callback(query_id)
             snap = self.engine.get_telemetry_snapshot()
             m = snap["metrics"]
             text = (
                 f"🏛️ <b>DANH SÁCH 60+ NHÀ CÁI & SÀN ĐANG ĐƯỢC QUÉT 24/7</b>\n\n"
-                f"1️⃣ <b>Sàn Web3 Prediction & Sports (4 sàn):</b>\n"
-                f"• <b>Polymarket</b> (Polygon L2 CLOB WS - Sub-0.1ms)\n"
-                f"• <b>SX Bet</b> (Arbitrum Centrifugo WS - Best Odds v3)\n"
-                f"• <b>Azuro Protocol</b> (Onchain feed 80+ sports)\n"
-                f"• <b>Overtime Markets V2</b> (Thales AMM on Optimism)\n\n"
-                f"2️⃣ <b>Cổng Asian Brokerage (5 nhà cái châu Á lớn):</b>\n"
-                f"• <b>SBOBET</b>, <b>Singbet (Crown)</b>, <b>BetISN</b>, <b>IBCBET</b>, <b>Pinnacle Asian</b>\n"
-                f"👉 <i>Cơ chế: Smart Order Routing (SOR) gom chung 1 tài khoản, chính sách 'Winners Welcome' không bao giờ giới hạn tiền cược!</i>\n\n"
-                f"3️⃣ <b>Top Tier Global (50+ Nhà cái quốc tế):</b>\n"
-                f"• Pinnacle Sharp EU, Betfair Exchange P2P, Bet365 Global, DraftKings, Bovada US, Unibet EU, 888sport, William Hill\n"
-                f"👉 <i>Cơ chế: The-Odds-API Gateway qua Azure Datacenter US (< 5ms)</i>\n\n"
-                f"4️⃣ <b>Vũ Trụ Bóng Cỏ & Siêu Cỏ In-Play (150+ giải đấu):</b>\n"
+                f"1️⃣ <b>Sàn Web3 Prediction & Sports:</b>\n"
+                f"• <b>Polymarket CLOB</b>: {m.get('polymarket_count', 0):,} cặp (Hôm nay: {m.get('today_matchdays_count', 0):,})\n"
+                f"• <b>SX Bet</b>: Arbitrum Centrifugo WS (25+ kèo)\n"
+                f"• <b>Azuro Protocol & Overtime</b>: On-chain Web3 AMM\n\n"
+                f"2️⃣ <b>Cổng Lịch Thi Đấu & Trực Tiếp Matchday:</b>\n"
+                f"• <b>ESPN Live Scoreboard</b>: {m.get('espn_matchdays_count', 0)} trận (EPL, UCL, La Liga, NBA)\n\n"
+                f"3️⃣ <b>Cổng Asian Brokerage (SOR):</b>\n"
+                f"• <b>SBOBET, Singbet, BetISN, Pinnacle Asian, IBCBET</b>: {m.get('asian_broker_markets', 0)} trận\n"
+                f"👉 <i>Chính sách 'Winners Welcome', không giới hạn cược!</i>\n\n"
+                f"4️⃣ <b>Vũ Trụ Bóng Cỏ In-Play (150+ giải đấu):</b>\n"
                 f"• <b>Bóng bàn TT Cup 24/7</b> (Ukraine/Ba Lan - 15 phút/trận)\n"
                 f"• <b>Tennis ITF $15k/$25k</b> (Monastir, Antalya)\n"
-                f"• <b>Bóng cỏ hạng 4-5</b>: Đức (Regionalliga), Anh (National League), Brazil Serie D, U19 UEFA\n"
-                f"👉 <i>Cơ chế: BetsAPI B2B In-play Feed + Bộ lọc Palpable Error & Khớp lệnh không đối xứng.</i>\n\n"
-                f"📊 <b>Tổng thị trường đang trực tiếp định giá:</b> <b>{m['active_markets_watched']:,} cặp</b>"
+                f"• <b>Bóng cỏ hạng 4-5</b>: Đức, Anh National League, Brazil U20\n\n"
+                f"📊 <b>Tổng vũ trụ thị trường đang định giá:</b> <b>{m['active_markets_watched']:,} cặp</b>"
             )
             await self.edit_message(message_id, text, reply_markup=self.get_back_markup())
 
@@ -334,8 +360,10 @@ class TelegramCommandHandler:
                 f"🔌 <b>Push WebSocket CLOB:</b> {ws_conn}\n"
                 f"📊 <b>Tổng lượt quét:</b> {snap['metrics']['scan_count']:,} lần\n"
                 f"🌐 <b>Vũ trụ thị trường theo dõi:</b> <b>{snap['metrics']['active_markets_watched']:,} cặp</b>\n"
-                f"⚽ <b>Bóng cỏ & siêu cỏ:</b> <b>{snap['metrics'].get('grassroots_count', 0):,} giải đấu</b>\n"
-                f"🏓 <b>Bóng siêu cỏ & TT Cup 24/7:</b> {snap['metrics'].get('super_grassroots_count', 0):,} trận\n"
+                f"📅 <b>Trận đấu trong ngày (0-24h):</b> <b>{snap['metrics'].get('today_matchdays_count', 0):,} trận</b>\n"
+                f"⚽ <b>ESPN Matchdays:</b> <b>{snap['metrics'].get('espn_matchdays_count', 0)} trận</b> (EPL, UCL, La Liga, NBA)\n"
+                f"🏓 <b>Bóng cỏ & TT Cup 24/7:</b> {snap['metrics'].get('betsapi_inplay_markets', 0)} trận\n"
+                f"🏛️ <b>Asian Brokerage SOR:</b> {snap['metrics'].get('asian_broker_markets', 0)} trận\n"
                 f"🔥 <b>Cơ hội chênh lệch mở:</b> {len(snap['active_opportunities'])} kèo\n\n"
                 f"<i>Môi trường: Python 3.14 + Lock-Free Event Loop + Pre-Match Safe Gate</i>"
             )

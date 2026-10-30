@@ -207,3 +207,16 @@ def test_betsapi_palpable_error_filter():
         inv_sum = (1 / float(ev["odds_1"])) + (1 / float(ev["odds_2"]))
         assert inv_sum >= 0.70
         assert ev["bet_delay_seconds"] >= 3
+
+# TC-10: ESPN Live Matchday Scoreboard Ingestion (Zero-Mock, Real Kickoff in GMT+7)
+def test_espn_scoreboard_matchday_ingestion():
+    from connectors.espn_scoreboard import EspnScoreboardConnector
+    sc = EspnScoreboardConnector()
+    fixtures = asyncio.run(sc.fetch_live_matchdays())
+    assert isinstance(fixtures, list)
+    assert len(fixtures) > 0
+    sample = fixtures[0]
+    assert "match" in sample
+    assert "kickoff_vn" in sample
+    assert "GMT+7" in sample["kickoff_vn"]
+    assert sample["status_state"] in ("pre", "in", "post")
