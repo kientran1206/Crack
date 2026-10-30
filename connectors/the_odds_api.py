@@ -65,32 +65,5 @@ class TheOddsApiConnector:
                     return parsed
         except Exception as e:
             logger.debug(f"The Odds API fetch error: {e}")
-        return self._generate_sharp_odds_feed(limit)
-
-    def _generate_sharp_odds_feed(self, count: int) -> List[dict]:
-        """High-resolution sharp bookmaker feed used when external API key is pending."""
-        import random
-        feed = []
-        fixtures = [
-            ("Arsenal", "Chelsea"), ("Real Madrid", "Barcelona"),
-            ("Bayern Munich", "Dortmund"), ("Juventus", "AC Milan"),
-            ("PSG", "Marseille"), ("Liverpool", "Man City")
-        ]
-        bms = ["Pinnacle (Sharp EU)", "Bet365 (Global)", "Bovada (US)", "Betfair Exchange (P2P)"]
-        
-        for i in range(count):
-            home, away = fixtures[i % len(fixtures)]
-            bm = bms[i % len(bms)]
-            p_home = Decimal(str(round(random.uniform(1.85, 2.30), 2)))
-            p_away = Decimal(str(round(random.uniform(1.85, 2.30), 2)))
-            feed.append({
-                "event_id": f"EXT_BM_{i}",
-                "match": f"{home} vs {away}",
-                "bookmaker": bm,
-                "team_home": home,
-                "price_home": p_home,
-                "team_away": away,
-                "price_away": p_away
-            })
-        self.cached_odds = feed
-        return feed
+        self.cached_odds = []
+        return []

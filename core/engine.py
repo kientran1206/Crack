@@ -30,6 +30,8 @@ from connectors.betsapi_feed import BetsApiGrassrootsFeed
 from core.ws_stream import PolymarketWebSocketStream
 from connectors.grassroots_feed import GrassrootsSportsUniverse
 from connectors.espn_scoreboard import EspnScoreboardConnector
+from connectors.limitless import LimitlessConnector, LimitlessSignal
+from core.limitless_engine import LimitlessArbitrageWatcher
 
 logger = logging.getLogger("ArbEngine")
 
@@ -48,6 +50,14 @@ class QuantitativeArbitrageEngine:
         self.telegram = TelegramNotifier(CONFIG.TELEGRAM_BOT_TOKEN, CONFIG.TELEGRAM_CHAT_ID)
         self.executor = LiveOnChainExecutor(CONFIG.POLYGON_RPC_URL, CONFIG.PRIVATE_KEY, dry_run=CONFIG.DRY_RUN)
         
+        # Limitless Exchange (Base L2) Real Arbitrage & Late-Cycle Watcher
+        self.limitless = LimitlessConnector(dry_run=CONFIG.DRY_RUN)
+        self.limitless_watcher = LimitlessArbitrageWatcher(
+            connector=self.limitless,
+            bankroll_usdc=self.ledger.total_balance,
+            on_signal_callback=self._handle_limitless_signal
+        )
+
         # Sub-5ms Streaming & 5,000+ Grassroots Modules
         self.ws_stream = PolymarketWebSocketStream(on_opportunity_callback=self._handle_ws_opportunity)
         self.grassroots_universe = GrassrootsSportsUniverse(target_universe_size=5200)
@@ -108,6 +118,11 @@ class QuantitativeArbitrageEngine:
         except Exception as e:
             logger.debug(f"WS opportunity handler error: {e}")
 
+    def _handle_limitless_signal(self, sig: LimitlessSignal):
+        """Asynchronous callback when genuine Limitless late-cycle mispricing is detected."""
+        if self.telegram.is_configured:
+            asyncio.create_task(self.telegram.notify_limitless_signal(sig))
+
     async def initialize(self):
         mode_str = "DRY-RUN (PAPER)" if self.executor.dry_run else "LIVE ON-CHAIN"
         self.log(f"Engine v4.0 Sub-5ms Quant Online [{mode_str}]. Wallet: ${self.ledger.total_balance:.2f} USDC")
@@ -123,8 +138,6 @@ class QuantitativeArbitrageEngine:
             self.azuro.fetch_live_sports_odds(limit=80),
             self.overtime.fetch_active_sports_odds(limit=50),
             self.odds_gateway.fetch_multi_bookmaker_odds(limit=50),
-            self.asian_broker.fetch_aggregated_asian_odds(limit=40),
-            self.betsapi_feed.fetch_live_grassroots_inplay(limit=40),
             self.espn_scoreboard.fetch_live_matchdays(),
             return_exceptions=True
         )
@@ -133,141 +146,65 @@ class QuantitativeArbitrageEngine:
         self.ws_stream.register_markets(self.poly.active_markets)
         asyncio.create_task(self.ws_stream.start())
 
-        total_pairs = len(self.poly.active_markets) + len(self.sxbet.cached_markets) + len(self.espn_scoreboard.cached_fixtures) + len(self.asian_broker.active_fixtures) + len(self.betsapi_feed.active_inplay_events)
-        super_count = self.grassroots_universe.stats["super_grassroots"]
-        standard_count = self.grassroots_universe.stats["standard_grassroots"]
-        semi_count = self.grassroots_universe.stats["semi_grassroots"]
+        # 4. Start Limitless Exchange Binance WebSocket & Late-Cycle Watcher
+        asyncio.create_task(self.limitless_watcher.run_binance_stream())
+
+        total_pairs = len(self.poly.active_markets) + len(self.sxbet.cached_markets) + len(self.espn_scoreboard.cached_fixtures)
 
         self.log(
             f"Vũ trụ Kèo Active: {total_pairs} cặp thị trường | "
             f"ESPN Matchdays: {len(self.espn_scoreboard.cached_fixtures)} trận | "
             f"Polymarket Real-time: {len(self.poly.active_markets)} cặp | "
-            f"Push-WebSocket: RUNNING."
+            f"Push-WebSocket & Limitless: RUNNING."
         )
-        
-        if self.telegram.is_configured:
-            await self.telegram.send_message(
-                f"⚡ <b>[V] VANTA 100% PURE REAL-TIME RADAR ONLINE!</b>\n\n"
-                f"🛡️ <b>Môi trường:</b> <code>{mode_str} (Polygon L2)</code>\n"
-                f"🌐 <b>Cơ chế:</b> <code>100% REAL LIVE DATA - ZERO SYNTHETIC MOCK</code>\n"
-                f"📡 <b>Độ trễ Polymarket CLOB:</b> <code>Sub-0.1ms (WebSocket Push)</code>\n"
-                f"🔍 <b>Trạng thái:</b> <i>Đang quét liên tục sổ lệnh thực tế từ các sàn live...</i>\n"
-                f"👉 <i>Chỉ báo động khi phát hiện chênh lệch thật trên thị trường ngoài đời!</i>"
-            )
 
     async def scan_once(self) -> List[Opportunity]:
-        """In-Memory Ultra-Fast Scan across 5,200+ Grassroots fixtures & Push WebSocket (< 2.5ms)."""
+        """In-Memory Ultra-Fast Scan across 100% Real Live Feeds without any synthetic mock generation."""
         t0 = time.perf_counter()
         discovered_opps: List[Opportunity] = []
 
         # =====================================================================
         # 1. 100% REAL LIVE POLYMARKET CLOB ORDERBOOK ARBITRAGE
         # =====================================================================
-        # Pure real-world orderbook inspection without any mock or synthetic data
         for m in self.poly.active_markets[:20]:
             try:
-                tids = [m.get("yes_token"), m.get("no_token")]
-                if tids[0] and tids[1]:
-                    # Evaluate live CLOB ask prices
-                    pass
+                y_ask = m.get("yes_ask")
+                n_ask = m.get("no_ask")
+                if y_ask and n_ask and y_ask > 0 and n_ask > 0:
+                    combined = Decimal(str(y_ask)) + Decimal(str(n_ask))
+                    if combined < Decimal("0.985"):
+                        spread_pct = ((Decimal("1.0") - combined) * Decimal("100")).quantize(Decimal("0.01"))
+                        target_shares = self.ledger.calculate_position_size(
+                            unit_cost=combined,
+                            max_market_shares=Decimal("50"),
+                            min_notional=CONFIG.MIN_TRADE_NOTIONAL_USDC
+                        )
+                        if target_shares > Decimal("0"):
+                            gross_cost = (target_shares * combined).quantize(Decimal("0.01"))
+                            payout = target_shares * Decimal("1.00")
+                            net_profit = payout - gross_cost - (CONFIG.POLYGON_GAS_PER_TX_USDC * Decimal("2"))
+                            if net_profit >= CONFIG.MIN_PROFIT_HURDLE_USDC:
+                                discovered_opps.append(Opportunity(
+                                    opp_id=f"POLY_CLOB_{m['id'][:8]}_{int(time.time()*1000)}",
+                                    market_title=f"[Polymarket CLOB] {m.get('question', '')[:50]}",
+                                    platform="Polymarket CLOB",
+                                    opp_type=OpportunityType.INTERNAL_BUNDLE,
+                                    spread_pct=spread_pct,
+                                    yes_price=Decimal(str(y_ask)),
+                                    no_price=Decimal(str(n_ask)),
+                                    target_shares=target_shares,
+                                    gross_cost=gross_cost,
+                                    est_fees=Decimal("0.00"),
+                                    est_gas=CONFIG.POLYGON_GAS_PER_TX_USDC * Decimal("2"),
+                                    est_net_profit=net_profit,
+                                    status=TradeStatus.VALIDATED,
+                                    url=m.get("url")
+                                ))
             except Exception as e:
                 logger.debug(f"Live poly eval error: {e}")
 
         # =====================================================================
-        # 2. OVERTIME MARKETS & 50+ GLOBAL BOOKMAKERS (PINNACLE, BET365, BOVADA)
-        # =====================================================================
-        for ot in self.overtime.cached_markets:
-            for ext in self.odds_gateway.cached_odds:
-                try:
-                    inv_sum = (Decimal("1.0") / ot["home_odds"]) + (Decimal("1.0") / ext["price_away"])
-                    if inv_sum < Decimal("0.985"):
-                        spread_pct = ((Decimal("1.0") - inv_sum) * Decimal("100")).quantize(Decimal("0.01"))
-                        discovered_opps.append(Opportunity(
-                            opp_id=f"CROSS_{ot['id'][:8]}_{int(time.time()*1000)}",
-                            market_title=f"[Cross-Bookmaker] {ot['title']}",
-                            platform=f"Overtime vs {ext['bookmaker']}",
-                            opp_type=OpportunityType.DUTCHING,
-                            spread_pct=spread_pct,
-                            yes_price=(Decimal("1.0") / ot["home_odds"]).quantize(Decimal("0.01")),
-                            no_price=(Decimal("1.0") / ext["price_away"]).quantize(Decimal("0.01")),
-                            target_shares=Decimal("5.0"),
-                            gross_cost=Decimal("4.85"),
-                            est_fees=Decimal("0.01"),
-                            est_gas=Decimal("0.01"),
-                            est_net_profit=Decimal("0.13"),
-                            status=TradeStatus.VALIDATED
-                        ))
-                except Exception as e:
-                    logger.debug(f"Cross-arb eval error: {e}")
-
-        # =====================================================================
-        # 3. ASIAN BROKERAGE SMART ORDER ROUTING (SBOBET, SINGBET, BETISN)
-        # =====================================================================
-        for af in self.asian_broker.active_fixtures:
-            try:
-                best_h = af["best_home"]
-                best_a = af["best_away"]
-                inv_sum = (Decimal("1.0") / best_h["odds"]) + (Decimal("1.0") / best_a["odds"])
-                if inv_sum < Decimal("0.985"):
-                    spread_pct = ((Decimal("1.0") - inv_sum) * Decimal("100")).quantize(Decimal("0.01"))
-                    alloc = min(self.ledger.free_balance * CONFIG.MAX_RISK_PER_TRADE_PCT, Decimal("50.0"))
-                    if alloc >= CONFIG.MIN_TRADE_NOTIONAL_USDC:
-                        gross_cost = alloc
-                        payout = (alloc / inv_sum).quantize(Decimal("0.01"))
-                        net_profit = (payout - gross_cost).quantize(Decimal("0.01"))
-                        if net_profit >= CONFIG.MIN_PROFIT_HURDLE_USDC:
-                            discovered_opps.append(Opportunity(
-                                opp_id=f"ASIAN_BROKER_{af['fixture_id']}_{int(time.time()*1000)}",
-                                market_title=f"[Asian Brokerage SOR] {af['match']} ({af['market_type']})",
-                                platform=f"{best_h['bookmaker']} vs {best_a['bookmaker']}",
-                                opp_type=OpportunityType.DUTCHING,
-                                spread_pct=spread_pct,
-                                yes_price=(Decimal("1.0") / best_h["odds"]).quantize(Decimal("0.01")),
-                                no_price=(Decimal("1.0") / best_a["odds"]).quantize(Decimal("0.01")),
-                                target_shares=alloc,
-                                gross_cost=gross_cost,
-                                est_fees=Decimal("0.00"),
-                                est_gas=Decimal("0.00"),
-                                est_net_profit=net_profit,
-                                status=TradeStatus.VALIDATED
-                            ))
-            except Exception as e:
-                logger.debug(f"Asian broker arb eval error: {e}")
-
-        # =====================================================================
-        # 4. BETSAPI IN-PLAY GRASSROOTS FEEDS (TT CUP, ITF, U19, REGIONAL)
-        # =====================================================================
-        for gf in self.betsapi_feed.active_inplay_events:
-            try:
-                inv_sum = (Decimal("1.0") / gf["odds_1"]) + (Decimal("1.0") / gf["odds_2"])
-                if inv_sum < Decimal("0.97"): # Edge >= 3% on grassroots
-                    spread_pct = ((Decimal("1.0") - inv_sum) * Decimal("100")).quantize(Decimal("0.01"))
-                    alloc = min(self.ledger.free_balance * CONFIG.MAX_RISK_PER_TRADE_PCT, Decimal("30.0"))
-                    if alloc >= CONFIG.MIN_TRADE_NOTIONAL_USDC:
-                        gross_cost = alloc
-                        payout = (alloc / inv_sum).quantize(Decimal("0.01"))
-                        net_profit = (payout - gross_cost).quantize(Decimal("0.01"))
-                        if net_profit >= CONFIG.MIN_PROFIT_HURDLE_USDC:
-                            discovered_opps.append(Opportunity(
-                                opp_id=f"BETSAPI_INPLAY_{gf['feed_event_id'][:12]}_{int(time.time()*1000)}",
-                                market_title=f"[Grassroots In-Play {gf['inplay_minute']}'] {gf['match']} ({gf['league']})"[:65],
-                                platform=gf["bookmaker_source"],
-                                opp_type=OpportunityType.DUTCHING,
-                                spread_pct=spread_pct,
-                                yes_price=(Decimal("1.0") / gf["odds_1"]).quantize(Decimal("0.01")),
-                                no_price=(Decimal("1.0") / gf["odds_2"]).quantize(Decimal("0.01")),
-                                target_shares=alloc,
-                                gross_cost=gross_cost,
-                                est_fees=Decimal("0.00"),
-                                est_gas=Decimal("0.00"),
-                                est_net_profit=net_profit,
-                                status=TradeStatus.VALIDATED
-                            ))
-            except Exception as e:
-                logger.debug(f"BetsApi grassroots eval error: {e}")
-
-        # =====================================================================
-        # 5. FAST IN-MEMORY CONVERGENCE & RECORDING
+        # 2. FAST IN-MEMORY CONVERGENCE & RECORDING
         # =====================================================================
         elapsed_ms = (time.perf_counter() - t0) * 1000
         self.last_latency_ms = round(elapsed_ms, 2)

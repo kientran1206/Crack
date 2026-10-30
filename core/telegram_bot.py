@@ -189,7 +189,7 @@ class TelegramCommandHandler:
 
         return (
             f"⚡ <b>VANTA // QUANTITATIVE CONTROL CENTER v4.0</b>\n"
-            f"<i>Động cơ săn chênh lệch tỷ lệ cược bóng cỏ tức thì Sub-5ms</i>\n\n"
+            f"<i>Chuyên cơ săn chênh lệch Web3 Arbitrage & Limitless Exchange (Base L2)</i>\n\n"
             f"⚙️ <b>Vận hành:</b> {status_str}\n"
             f"🛡️ <b>Môi trường:</b> {mode_badge}\n"
             f"📍 <b>Ví Bot (Polygon L2):</b> <code>{short_addr}</code>\n\n"
@@ -348,14 +348,24 @@ class TelegramCommandHandler:
 
         elif data == "limitless_scan_now":
             await self.answer_callback(query_id, "⚡ Đang quét thị trường Limitless...")
+            btc_spot = self.engine.limitless_watcher.spot_prices.get("BTC", Decimal("0")) if hasattr(self.engine, "limitless_watcher") else Decimal("0")
+            eth_spot = self.engine.limitless_watcher.spot_prices.get("ETH", Decimal("0")) if hasattr(self.engine, "limitless_watcher") else Decimal("0")
+            spot_lines = []
+            if btc_spot > 0:
+                spot_lines.append(f"• <b>BTC Spot (Binance 100ms):</b> ${btc_spot:,.2f}")
+            if eth_spot > 0:
+                spot_lines.append(f"• <b>ETH Spot (Binance 100ms):</b> ${eth_spot:,.2f}")
+            spot_str = "\n".join(spot_lines) if spot_lines else "• <i>Đang đồng bộ giá Spot trực tiếp qua Binance WebSocket...</i>"
+            
             text = (
-                f"⚡ <b>KẾT QUẢ QUÉT TÍN HIỆU LIMITLESS (BASE L2)</b>\n\n"
-                f"📡 <b>Thị trường đang theo dõi:</b> BTC Hourly & ETH Hourly\n"
-                f"🎯 <b>Bộ lọc an toàn:</b>\n"
-                f"• BTC Spot: Theo dõi qua Binance WebSocket 100ms\n"
-                f"• Thời gian quét hợp lệ: Còn từ 2 đến 10 phút trước Expiry\n"
-                f"• Vùng cấm: Nến còn dưới 90 giây -> <b>Bác bỏ hoàn toàn</b>\n\n"
-                f"✅ <i>Trạng thái Engine: Sẵn sàng phát tín hiệu tự động khi nến bước vào 10 phút cuối!</i>"
+                f"⚡ <b>KẾT QUẢ QUÉT THỰC TẾ LIMITLESS (BASE L2)</b>\n\n"
+                f"📡 <b>Giá Spot Thời Gian Thực:</b>\n{spot_str}\n\n"
+                f"🎯 <b>Cơ chế khớp lệnh:</b> Orderbook EIP-712 Off-Chain (Maker 0% Gas)\n"
+                f"🛡️ <b>Bộ lọc bảo vệ vốn $10 (Claude Opus):</b>\n"
+                f"• Cược an toàn: <b>$0.50 – $1.00/lệnh</b>\n"
+                f"• Vùng cấm: <b>Đóng băng 90 giây cuối (Dead Zone)</b>\n"
+                f"• Lệnh cược: <code>PostOnly: true</code>\n\n"
+                f"✅ <i>Trạng thái Engine: Đang giám sát nến 1h liên tục, tự động phát tín hiệu khi xuất hiện lệch giá!</i>"
             )
             await self.edit_message(message_id, text, reply_markup=self.get_limitless_markup())
 

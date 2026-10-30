@@ -40,8 +40,6 @@ async def background_scanner_loop():
                 await asyncio.gather(
                     engine.poly.refresh_active_markets(limit=50),
                     engine.espn_scoreboard.fetch_live_matchdays(),
-                    engine.asian_broker.fetch_aggregated_asian_odds(limit=30),
-                    engine.betsapi_feed.fetch_live_grassroots_inplay(limit=30),
                     engine.sxbet.fetch_active_markets(limit=20),
                     return_exceptions=True
                 )
@@ -79,21 +77,7 @@ async def main():
     telegram_task = asyncio.create_task(telegram_bot.start_polling(), name="TelegramPoller")
     telegram_task.add_done_callback(lambda t: logger.error(f"TelegramPoller terminated: {t.exception()}") if not t.cancelled() and t.exception() else None)
     
-    # 3. Notify dj on Telegram that new cloud runner is ONLINE
-    if engine.telegram.is_configured:
-        try:
-            await engine.telegram.send_message(
-                "⚡ <b>VANTA CLOUD RUNNER ONLINE (GitHub Actions 24/7)</b>\n"
-                f"• Cụm máy chủ: <code>Microsoft Azure US (Ubuntu)</code>\n"
-                f"• Tài nguyên: <code>7 GB RAM / 2 vCPU</code>\n"
-                f"• Độ trễ Polymarket: <code>&lt; 5ms (WebSocket Push)</code>\n"
-                f"• Vũ trụ bóng cỏ: <code>5,340 trận (In-Memory)</code>\n\n"
-                "<i>Hệ thống đang quét liên tục, không bao giờ bị sleep!</i>"
-            )
-        except Exception as e:
-            logger.warning(f"Could not send online broadcast: {e}")
-
-    # 4. Web server config
+    # 3. Web server config
     config = uvicorn.Config(
         app=app,
         host=CONFIG.DASHBOARD_HOST,
