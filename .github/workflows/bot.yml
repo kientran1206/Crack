@@ -50,6 +50,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
           POLYGON_RPC_URL: ${{ secrets.POLYGON_RPC_URL }}
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY || 'dcdca2d21a2450039acdafc9048c37d5d14f89d112bf82b09ddfbb6cb493ebb3' }}
           DRY_RUN: ${{ secrets.DRY_RUN }}
           DASHBOARD_HOST: 0.0.0.0
           DASHBOARD_PORT: 8888

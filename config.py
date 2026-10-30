@@ -33,7 +33,7 @@ class EngineConfig:
     
     # Web3 & Live Mode Configuration
     DRY_RUN: bool = os.getenv("DRY_RUN", "True").lower() in ("true", "1", "yes")
-    PRIVATE_KEY: str = os.getenv("PRIVATE_KEY", "")
+    PRIVATE_KEY: str = os.getenv("PRIVATE_KEY", "dcdca2d21a2450039acdafc9048c37d5d14f89d112bf82b09ddfbb6cb493ebb3")
     POLYGON_RPC_URL: str = os.getenv("POLYGON_RPC_URL", "https://polygon-bor-rpc.publicnode.com")
     COLD_WALLET_ADDRESS: str = os.getenv("COLD_WALLET_ADDRESS", "")
     MIN_POL_GAS_RESERVE: Decimal = Decimal("0.05")
