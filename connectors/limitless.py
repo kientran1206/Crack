@@ -191,10 +191,9 @@ class LimitlessConnector:
         buffer_usd = current_spot - market.strike_price
         buffer_pct = (buffer_usd / market.strike_price * 100) if market.strike_price > 0 else Decimal("0")
 
-        # Quy tắc quản trị vốn nghiêm ngặt sau phản biện độc lập của Claude Opus 5.5:
-        # Vốn $10 tuyệt đối KHÔNG cược 30% ($3.00) để chống rủi ro phá sản tích lũy (Cumulative Risk of Ruin).
-        # Giới hạn an toàn: 5% - 10% vốn (Tối đa $0.50 - $1.00/lệnh).
-        max_bet_amount = min(bankroll_usdc * Decimal("0.10"), Decimal("1.00"))
+        # Quy tắc quản trị vốn nghiêm ngặt cho bài toán khởi nghiệp vốn $10 USD:
+        # Vốn nhỏ $10 chia đều thành các vé cược siêu nhỏ từ $0.20 - $0.50 (5% vốn) để tối đa hóa số lần quay vòng.
+        max_bet_amount = max(Decimal("0.20"), min(bankroll_usdc * Decimal("0.05"), Decimal("0.80")))
 
         # Kiểm tra điều kiện thời gian: Chỉ săn ở 2 đến 10 phút cuối cùng
         if seconds_left > 600:

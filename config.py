@@ -19,16 +19,17 @@ if _env_path.exists():
 
 @dataclass
 class EngineConfig:
-    # Portfolio & Risk Limits
+    # Portfolio & Risk Limits (Optimized for Micro-Bankroll Bootstrap $10)
     STARTING_BALANCE_USDC: Decimal = Decimal(os.getenv("STARTING_BALANCE_USDC", "10.00"))
-    MAX_RISK_PER_TRADE_PCT: Decimal = Decimal("0.25")
-    MIN_TRADE_NOTIONAL_USDC: Decimal = Decimal("1.00")
+    MAX_RISK_PER_TRADE_PCT: Decimal = Decimal("0.05")  # 5% max risk per trade ($0.50 on $10)
+    MIN_TRADE_NOTIONAL_USDC: Decimal = Decimal("0.20") # Micro-ticket minimum: 20 cents
     MIN_PROFIT_HURDLE_USDC: Decimal = Decimal("0.005")
     MIN_SPREAD_PCT: Decimal = Decimal("1.0")
     
-    # Cost & Execution Mechanics
+    # Cost & Execution Mechanics (Zero-Gas Priority Routing)
     POLYGON_GAS_PER_TX_USDC: Decimal = Decimal("0.005")
     TAKER_FEE_FACTOR: Decimal = Decimal("0.02")
+    ZERO_GAS_PRIORITY_ONLY: bool = True  # Strictly route through Maker 0% Gas (Limitless) or Gasless Relayer (Polymarket)
     
     # Web3 & Live Mode Configuration
     DRY_RUN: bool = os.getenv("DRY_RUN", "True").lower() in ("true", "1", "yes")

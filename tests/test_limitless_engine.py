@@ -47,7 +47,7 @@ def test_late_cycle_convergence_safe_signal():
     assert signal.is_safe is True
     assert signal.recommended_side == "UP"
     assert signal.share_price == Decimal("0.89")
-    assert signal.allocated_usd == Decimal("1.00")  # Chia đạn $1.00 (10% từ vốn $10) sau phản biện Opus
+    assert signal.allocated_usd == Decimal("0.50")  # Chia đạn $0.50 (5% từ vốn $10) bảo vệ tối đa vốn nhỏ
     assert signal.expected_roi_pct > Decimal("12.0")
     assert signal.rejection_reason is None
 
