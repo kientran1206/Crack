@@ -44,7 +44,8 @@ class LimitlessArbitrageWatcher:
         on_signal_callback: Optional[Callable[[LimitlessSignal], None]] = None,
         db: Optional[PaperDatabase] = None,
         ledger=None,
-        telegram=None
+        telegram=None,
+        executor=None
     ):
         self.connector = connector
         self.bankroll_usdc = bankroll_usdc
@@ -52,6 +53,7 @@ class LimitlessArbitrageWatcher:
         self.db = db or PaperDatabase()
         self.ledger = ledger
         self.telegram = telegram
+        self.executor = executor
         
         # Cache giá Spot thời gian thực từ Binance WebSocket
         self.spot_prices: Dict[str, Decimal] = {
@@ -63,6 +65,15 @@ class LimitlessArbitrageWatcher:
         self._last_market_refresh = 0
         self._active_markets: List[LimitlessMarket] = []
         self._market_by_slug: Dict[str, LimitlessMarket] = {}
+
+    def is_paper_mode(self) -> bool:
+        """
+        Kiểm tra xem bot có đang ở chế độ PAPER (DRY_RUN=True) hay không.
+        Khi ở chế độ LIVE (DRY_RUN=False), bot sẽ tự động TẮT toàn bộ thông báo paper.
+        """
+        if self.executor is not None and hasattr(self.executor, "dry_run"):
+            return bool(self.executor.dry_run)
+        return getattr(self.connector, "dry_run", True)
 
     def update_spot_price(self, symbol: str, price: Decimal):
         """Cập nhật giá Spot từ Binance."""
@@ -127,8 +138,10 @@ class LimitlessArbitrageWatcher:
             logger.info("Từ chối vào lệnh %s: Số dư khả dụng không đủ ($%.2f < $%.2f).", market.slug, self.ledger.free_balance, cost)
             return False
 
-        # Phạt trễ 200ms mô phỏng ký EIP-712 và độ trễ mạng
-        await asyncio.sleep(float(CONFIG.SIMULATED_EXECUTION_LATENCY_MS) / 1000.0)
+        # Tốc độ vi xử lý cao nhất: chỉ sleep nếu latency > 0, mặc định 0ms (thực thi tức thì)
+        latency_ms = getattr(CONFIG, "SIMULATED_EXECUTION_LATENCY_MS", 0)
+        if latency_ms > 0:
+            await asyncio.sleep(float(latency_ms) / 1000.0)
 
         shares = (cost / sig.share_price).quantize(Decimal("0.0001"))
         pos_id = f"POS_{market.target_asset}_{int(time.time()*1000)}"
@@ -137,7 +150,7 @@ class LimitlessArbitrageWatcher:
         if self.ledger:
             self.ledger.reserve_capital(pos_id, cost)
 
-        # Ghi nhận vào SQLite
+        # Ghi nhận vào SQLite (Luôn lưu vĩnh viễn)
         entry_ts = int(time.time())
         self.db.record_open_position(
             position_id=pos_id,
@@ -160,21 +173,23 @@ class LimitlessArbitrageWatcher:
             market.title, sig.recommended_side, cost, market.strike_price, sig.spot_price
         )
 
-        # Gửi thông báo Telegram
-        if self.telegram:
+        # Gửi thông báo Telegram (CHỈ GỬI KHI Ở CHẾ ĐỘ PAPER, BẬT LIVE THÌ TỰ ĐỘNG TẮT)
+        if self.telegram and self.is_paper_mode():
             expiry_dt = datetime.fromtimestamp(market.end_time, tz=VN_TZ)
             msg = (
                 f"🎯 <b>[V] VỊ THẾ PAPER THỰC CHIẾN VỪA VÀO VỐN!</b>\n"
-                f"<i>Cơ chế: Khóa vốn Escrow 100% | Phạt trễ 200ms | Quyết toán nến thật</i>\n\n"
+                f"<i>Lưu SQLite vĩnh viễn | Khóa vốn Escrow | Quyết toán nến thật</i>\n\n"
                 f"🏛️ <b>Sàn:</b> Limitless Exchange (Base L2)\n"
                 f"🎯 <b>Thị trường:</b> {market.title}\n"
                 f"⚖️ <b>Cửa chọn:</b> <b>{sig.recommended_side}</b> (Giá mua: <b>${sig.share_price:.2f}</b>)\n"
                 f"💵 <b>Vốn khóa (Escrow):</b> <b>${cost:.2f} USDC</b> (Số share: {shares})\n"
                 f"🛡️ <b>Buffer lúc vào:</b> <b>{sig.buffer_usd:+.2f} USD</b> ({sig.buffer_pct:+.2f}%)\n"
                 f"⏱️ <b>Thời điểm chốt nến:</b> <code>{expiry_dt.strftime('%H:%M:%S %d/%m')}</code> (Còn {sig.seconds_to_expiry}s)\n\n"
-                f"👉 <i>Vốn đang được giam an toàn. Khi nến đóng, bot sẽ đọc giá Oracle để xác định Thắng/Thua!</i>"
+                f"👉 <i>Đã lưu vào Sổ cái Paper. Khi nến đóng, bot sẽ đọc giá Oracle để báo cáo Thắng/Thua!</i>"
             )
             await self.telegram.send_message(msg)
+        elif not self.is_paper_mode():
+            logger.info("Chế độ LIVE đang kích hoạt: Đã tắt thông báo paper trade trên Telegram.")
 
         return True
 
@@ -251,7 +266,7 @@ class LimitlessArbitrageWatcher:
 
                             logger.info("VỊ THẾ THẮNG [%s]: Net PnL +$%.3f USDC", pos_id, net_pnl)
 
-                            if self.telegram:
+                            if self.telegram and self.is_paper_mode():
                                 msg = (
                                     f"🏆 <b>[V] KẾT QUẢ QUYẾT TOÁN: THẮNG KÈO!</b>\n"
                                     f"🎯 <b>Thị trường:</b> {pos['title']}\n"
@@ -288,7 +303,7 @@ class LimitlessArbitrageWatcher:
 
                             logger.warning("VỊ THẾ THUA [%s]: Bị rút râu mất -$%.2f USDC", pos_id, cost)
 
-                            if self.telegram:
+                            if self.telegram and self.is_paper_mode():
                                 msg = (
                                     f"❌ <b>[V] KẾT QUẢ QUYẾT TOÁN: THUA KÈO (RÚT RÂU)!</b>\n"
                                     f"🎯 <b>Thị trường:</b> {pos['title']}\n"

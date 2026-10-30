@@ -50,7 +50,7 @@ class EngineConfig:
     
     # Paper Trading Realism & Anti-Hallucination Controls
     MAX_CONCURRENT_PAPER_POSITIONS: int = 3   # Tối đa 3 vị thế mở cùng lúc (chống dồn rủi ro)
-    SIMULATED_EXECUTION_LATENCY_MS: int = 200 # Phạt trễ 200ms mô phỏng ký ví và gửi RPC
+    SIMULATED_EXECUTION_LATENCY_MS: int = 0   # 0ms - Thực thi tức thì ở tốc độ vi xử lý cao nhất (không sleep nhân tạo)
     ORACLE_SAFETY_MARGIN_BTC: Decimal = Decimal("50.00") # Biên an toàn chống lệch pha Chainlink vs Binance
     ORACLE_SAFETY_MARGIN_ETH: Decimal = Decimal("3.00")
     DAILY_REPORT_HOURS_VN: list = (10, 22)    # 10:00 sáng và 22:00 đêm Việt Nam

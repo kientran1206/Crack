@@ -61,7 +61,8 @@ class QuantitativeArbitrageEngine:
             on_signal_callback=self._handle_limitless_signal,
             db=self.db,
             ledger=self.ledger,
-            telegram=self.telegram
+            telegram=self.telegram,
+            executor=self.executor
         )
         self.daily_reporter = AutomatedDailyReporter(
             db=self.db,

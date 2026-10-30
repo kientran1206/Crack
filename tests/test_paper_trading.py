@@ -223,3 +223,105 @@ def test_paper_entry_locks_capital_and_enforces_limit(temp_db):
         assert success_dup is False
 
     asyncio.run(_test_coro())
+
+
+def test_paper_reporting_muted_in_live_mode(temp_db):
+    """TC-07: Test that paper reports to Telegram are muted when LIVE mode is active."""
+    class DummyExecutor:
+        def __init__(self, dry_run=True):
+            self.dry_run = dry_run
+
+    class DummyTelegram:
+        def __init__(self):
+            self.sent_messages = []
+
+        async def send_message(self, text, reply_markup=None):
+            self.sent_messages.append(text)
+
+    async def _test_coro():
+        telegram = DummyTelegram()
+        live_executor = DummyExecutor(dry_run=False) # LIVE MODE
+        connector = LimitlessConnector(dry_run=False)
+        ledger = VirtualStateLedger(starting_balance=Decimal("10.00"), max_risk_pct=Decimal("0.05"), gas_cost=Decimal("0.001"))
+        
+        watcher = LimitlessArbitrageWatcher(
+            connector=connector,
+            bankroll_usdc=Decimal("10.00"),
+            db=temp_db,
+            ledger=ledger,
+            telegram=telegram,
+            executor=live_executor
+        )
+
+        assert watcher.is_paper_mode() is False
+
+        now = int(time.time())
+        market = LimitlessMarket(
+            slug="btc-test-live-mode",
+            title="Bitcoin Live Mode Test",
+            target_asset="BTC",
+            strike_price=Decimal("98000"),
+            end_time=now + 300,
+            exchange_address="0x1111",
+            token_id_up=1,
+            token_id_down=2,
+            best_ask_up=Decimal("0.89"),
+            best_ask_down=Decimal("0.11")
+        )
+        sig = LimitlessSignal(
+            market_slug=market.slug,
+            asset="BTC",
+            strike_price=market.strike_price,
+            spot_price=Decimal("98600"),
+            buffer_usd=Decimal("600"),
+            buffer_pct=Decimal("0.61"),
+            seconds_to_expiry=300,
+            recommended_side="UP",
+            share_price=Decimal("0.89"),
+            expected_roi_pct=Decimal("12.36"),
+            allocated_usd=Decimal("0.50"),
+            is_safe=True
+        )
+
+        # In LIVE mode, position is stored in DB for bookkeeping, but Telegram paper notification is MUTED!
+        success = await watcher.execute_paper_entry(sig, market)
+        assert success is True
+        assert len(telegram.sent_messages) == 0  # MUTED!
+
+        # Now switch executor to PAPER (dry_run=True)
+        live_executor.dry_run = True
+        assert watcher.is_paper_mode() is True
+
+        market2 = LimitlessMarket(
+            slug="btc-test-paper-mode",
+            title="Bitcoin Paper Mode Test",
+            target_asset="BTC",
+            strike_price=Decimal("98000"),
+            end_time=now + 300,
+            exchange_address="0x1111",
+            token_id_up=1,
+            token_id_down=2,
+            best_ask_up=Decimal("0.89"),
+            best_ask_down=Decimal("0.11")
+        )
+        sig2 = LimitlessSignal(
+            market_slug=market2.slug,
+            asset="BTC",
+            strike_price=market2.strike_price,
+            spot_price=Decimal("98600"),
+            buffer_usd=Decimal("600"),
+            buffer_pct=Decimal("0.61"),
+            seconds_to_expiry=300,
+            recommended_side="UP",
+            share_price=Decimal("0.89"),
+            expected_roi_pct=Decimal("12.36"),
+            allocated_usd=Decimal("0.50"),
+            is_safe=True
+        )
+
+        success2 = await watcher.execute_paper_entry(sig2, market2)
+        assert success2 is True
+        assert len(telegram.sent_messages) == 1  # REPORTED!
+        assert "VỊ THẾ PAPER THỰC CHIẾN VỪA VÀO VỐN" in telegram.sent_messages[0]
+
+    asyncio.run(_test_coro())
