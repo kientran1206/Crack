@@ -235,3 +235,38 @@ def test_rejection_of_knife_catching_short_timeframe():
 
     assert signal.is_safe is False
     assert "Bác bỏ nến ngắn" in signal.rejection_reason
+
+
+def test_tiered_position_sizing_for_different_bankrolls():
+    """
+    Kiểm tra thuật toán chia đạn phân tầng (Tiered Position Sizing):
+    - Vốn < $3.00 (ví dụ $2.58 USDC): Vào lệnh đúng $0.25 (10 viên đạn)
+    - Vốn $3.00 - $5.00: Vào lệnh $0.35
+    - Vốn $5.00 - $10.00: Vào lệnh $0.50
+    - Vốn $10.00 - $25.00: Vào lệnh $1.00
+    - Vốn $50.00: Vào lệnh $2.50 (5% vốn)
+    """
+    try:
+        from connectors.limitless import calculate_tiered_bet_amount
+    except ImportError:
+        from prediction_bot.connectors.limitless import calculate_tiered_bet_amount
+
+    # Vốn hạt tiêu của dj ($2.58)
+    assert calculate_tiered_bet_amount(Decimal("2.58")) == Decimal("0.25")
+    assert calculate_tiered_bet_amount(Decimal("1.50")) == Decimal("0.25")
+
+    # Vốn $3 - $5
+    assert calculate_tiered_bet_amount(Decimal("3.50")) == Decimal("0.35")
+    assert calculate_tiered_bet_amount(Decimal("4.99")) == Decimal("0.35")
+
+    # Vốn $5 - $10
+    assert calculate_tiered_bet_amount(Decimal("5.00")) == Decimal("0.50")
+    assert calculate_tiered_bet_amount(Decimal("10.00")) == Decimal("0.50")
+
+    # Vốn $10 - $25
+    assert calculate_tiered_bet_amount(Decimal("15.00")) == Decimal("1.00")
+    assert calculate_tiered_bet_amount(Decimal("25.00")) == Decimal("1.00")
+
+    # Vốn > $25
+    assert calculate_tiered_bet_amount(Decimal("50.00")) == Decimal("2.50")
+    assert calculate_tiered_bet_amount(Decimal("100.00")) == Decimal("3.00") # Cap at $3.00

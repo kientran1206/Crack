@@ -55,6 +55,28 @@ class LimitlessSignal:
     rejection_reason: Optional[str] = None
 
 
+def calculate_tiered_bet_amount(bankroll_usdc: Decimal) -> Decimal:
+    """
+    Thuật toán chia đạn phân tầng (Tiered Dynamic Position Sizing):
+    Khớp chính xác từng khoảng vốn nhỏ của người dùng để bảo toàn vốn và tối đa hóa số lần cược:
+    - Vốn < $3.00 (ví dụ $2.58 USDC): Cược $0.25 (chia ~10 viên đạn độc lập)
+    - Vốn $3.00 - $5.00: Cược $0.35 (chia ~10 - 14 viên đạn)
+    - Vốn $5.00 - $10.00: Cược $0.50 (chia 10 - 20 viên đạn)
+    - Vốn $10.00 - $25.00: Cược $1.00 (chia 10 - 25 viên đạn)
+    - Vốn > $25.00: Cược min(bankroll * 5%, $3.00)
+    """
+    if bankroll_usdc < Decimal("3.00"):
+        return Decimal("0.25")
+    elif bankroll_usdc < Decimal("5.00"):
+        return Decimal("0.35")
+    elif bankroll_usdc <= Decimal("10.00"):
+        return Decimal("0.50")
+    elif bankroll_usdc <= Decimal("25.00"):
+        return Decimal("1.00")
+    else:
+        return min(bankroll_usdc * Decimal("0.05"), Decimal("3.00")).quantize(Decimal("0.01"))
+
+
 class LimitlessConnector:
     """
     Client giao tiếp trực tiếp với Limitless Exchange API trên Base L2.
@@ -211,9 +233,9 @@ class LimitlessConnector:
         buffer_usd = current_spot - market.strike_price
         buffer_pct = (buffer_usd / market.strike_price * 100) if market.strike_price > 0 else Decimal("0")
 
-        # Quy tắc quản trị vốn nghiêm ngặt cho bài toán khởi nghiệp vốn $10 USD:
-        # Vốn nhỏ $10 chia đều thành các vé cược siêu nhỏ từ $0.20 - $0.50 (5% vốn) để tối đa hóa số lần quay vòng.
-        max_bet_amount = max(Decimal("0.20"), min(bankroll_usdc * Decimal("0.05"), Decimal("0.80")))
+        # Quy tắc chia đạn phân tầng (Tiered Dynamic Position Sizing) linh hoạt theo từng mức vốn:
+        # Vốn < $3 cược $0.25 (10 viên đạn) | Vốn $3-$5 cược $0.35 | Vốn $5-$10 cược $0.50 | Vốn >$10 cược $1.00
+        max_bet_amount = calculate_tiered_bet_amount(bankroll_usdc)
 
         # LOẠI BỎ TRIỆT ĐỂ BẮT DAO RƠI & NẾN NGẮN (Anti-Knife-Catching Regex & Duration Guard):
         # Nghiêm cấm cược trên nến 5m, 15m, 10m, 30m bằng Regex trên cả title và slug
