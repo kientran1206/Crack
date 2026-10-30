@@ -63,6 +63,7 @@ class LimitlessConnector:
     def __init__(self, private_key: str = "", dry_run: bool = True):
         self.private_key = private_key
         self.dry_run = dry_run
+        self.cached_markets: List[LimitlessMarket] = []
         self._wallet_address: Optional[str] = None
         self._signer = None
 
@@ -168,6 +169,7 @@ class LimitlessConnector:
                 volume_24h=vol_24h
             ))
 
+        self.cached_markets = markets
         return markets
 
     def evaluate_late_cycle_convergence(

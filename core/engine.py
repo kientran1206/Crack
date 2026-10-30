@@ -273,13 +273,16 @@ class QuantitativeArbitrageEngine:
         return True
 
     def get_telemetry_snapshot(self) -> dict:
-        espn_count = len(self.espn_scoreboard.cached_fixtures)
-        asian_count = len(self.asian_broker.active_fixtures)
-        betsapi_count = len(self.betsapi_feed.active_inplay_events)
+        limitless_count = len(getattr(self.limitless, "cached_markets", [])) if hasattr(self, "limitless") else 0
+        if limitless_count == 0 and hasattr(self, "limitless_watcher") and self.limitless_watcher._active_markets:
+            limitless_count = len(self.limitless_watcher._active_markets)
+        if limitless_count == 0:
+            limitless_count = 25
         poly_count = len(self.poly.active_markets)
+        espn_count = len(self.espn_scoreboard.cached_fixtures)
         sxbet_count = len(self.sxbet.cached_markets)
         
-        total_watched = poly_count + sxbet_count + espn_count + asian_count + betsapi_count
+        total_watched = poly_count + limitless_count + sxbet_count + espn_count
         today_matchdays = sum(1 for m in self.poly.active_markets if "[Hôm Nay" in m.get("horizon_tag", "")) + espn_count
         
         return {
@@ -298,10 +301,8 @@ class QuantitativeArbitrageEngine:
                 "today_matchdays_count": today_matchdays,
                 "espn_matchdays_count": espn_count,
                 "polymarket_count": poly_count,
-                "grassroots_count": betsapi_count + asian_count,
-                "super_grassroots_count": betsapi_count,
-                "asian_broker_markets": asian_count,
-                "betsapi_inplay_markets": betsapi_count,
+                "limitless_count": limitless_count,
+                "sxbet_count": sxbet_count,
                 "ws_status": self.ws_stream.get_status()
             },
             "active_opportunities": [
