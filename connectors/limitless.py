@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 import json
 import logging
+import re
 import time
 from typing import Any, Dict, List, Optional
 import urllib.parse
@@ -31,9 +32,9 @@ class LimitlessMarket:
     exchange_address: str
     token_id_up: int
     token_id_down: int
-    best_ask_up: Decimal  # Giá bán rẻ nhất của share UP (0.01 - 0.99)
-    best_ask_down: Decimal  # Giá bán rẻ nhất của share DOWN
-    volume_24h: Decimal
+    best_ask_up: Decimal = Decimal("0.50")  # Giá bán rẻ nhất của share UP (0.01 - 0.99)
+    best_ask_down: Decimal = Decimal("0.50")  # Giá bán rẻ nhất của share DOWN
+    volume_24h: Decimal = Decimal("0.00")
 
 
 @dataclass
@@ -195,11 +196,12 @@ class LimitlessConnector:
         # Vốn nhỏ $10 chia đều thành các vé cược siêu nhỏ từ $0.20 - $0.50 (5% vốn) để tối đa hóa số lần quay vòng.
         max_bet_amount = max(Decimal("0.20"), min(bankroll_usdc * Decimal("0.05"), Decimal("0.80")))
 
-        # LOẠI BỎ TRIỆT ĐỂ BẮT DAO RƠI (Chống râu nến giật khung siêu ngắn theo phản xạ chuẩn của dj):
-        # Nghiêm cấm cược trên nến 5 Phút (5 Min) và 15 Phút (15 Min) vì 85% biến động là nhiễu giật râu!
-        # CHỈ CHO PHÉP săn trên nến 1 Giờ (Hourly) hoặc Daily có đà quán tính vững chắc.
+        # LOẠI BỎ TRIỆT ĐỂ BẮT DAO RƠI & NẾN NGẮN (Anti-Knife-Catching Regex & Duration Guard):
+        # Nghiêm cấm cược trên nến 5m, 15m, 10m, 30m bằng Regex trên cả title và slug
         title_lower = market.title.lower()
-        if "5 min" in title_lower or "15 min" in title_lower:
+        slug_lower = market.slug.lower()
+        is_short_tf = bool(re.search(r'\b(5m|15m|10m|30m|5\s*min|15\s*min|10\s*min|30\s*min|5-min|15-min)\b', f"{title_lower} {slug_lower}"))
+        if is_short_tf:
             return LimitlessSignal(
                 market_slug=market.slug,
                 asset=market.target_asset,
@@ -213,7 +215,7 @@ class LimitlessConnector:
                 expected_roi_pct=Decimal("0"),
                 allocated_usd=Decimal("0"),
                 is_safe=False,
-                rejection_reason="Bác bỏ nến 5m/15m: Khung quá ngắn, nguy cơ bắt dao rơi và râu nến quét phút chót"
+                rejection_reason="Bác bỏ nến ngắn (<1h): Rủi ro bắt dao rơi biến động cao và nhiễu râu nến"
             )
 
         # Kiểm tra điều kiện thời gian: Chỉ săn ở 2 đến 10 phút cuối cùng
@@ -255,22 +257,29 @@ class LimitlessConnector:
                 rejection_reason="Vùng chết (< 90s): Tránh Reject Storm & Lệch pha Chainlink Data Streams"
             )
 
-        # Ngưỡng an toàn tối thiểu (Buffer Threshold)
-        # BTC: Cách strike >= $250
-        # ETH: Cách strike >= $15
-        # SOL: Cách strike >= $2
-        safe_buffer_usd = Decimal("250.00")
+        # Ngưỡng an toàn Buffer Động theo thời gian (Dynamic Time-Decay Buffer Threshold)
+        # Càng nhiều thời gian còn lại, buffer an toàn đòi hỏi càng lớn để chống râu nến quét.
+        # t = 120s -> time_mult = 1.4x (BTC $350 | ETH $21)
+        # t = 300s -> time_mult = 2.0x (BTC $500 | ETH $30)
+        # t = 600s -> time_mult = 3.0x (BTC $750 | ETH $45)
+        base_buffer = Decimal("250.00")
         if market.target_asset == "ETH":
-            safe_buffer_usd = Decimal("15.00")
+            base_buffer = Decimal("15.00")
         elif market.target_asset == "SOL":
-            safe_buffer_usd = Decimal("2.00")
+            base_buffer = Decimal("2.00")
+
+        time_mult = Decimal("1.0") + (Decimal(str(seconds_left)) / Decimal("300"))
+        safe_buffer_usd = (base_buffer * time_mult).quantize(Decimal("0.01"))
+
+        # Oracle Basis Margin: Trừ hao khoảng cách để chống lệch pha giữa Binance Spot và Chainlink
+        oracle_margin = Decimal("50.00") if market.target_asset == "BTC" else (Decimal("3.00") if market.target_asset == "ETH" else Decimal("0.50"))
 
         # Xác định phe thắng gần như chắc chắn
-        if buffer_usd >= safe_buffer_usd:
+        if buffer_usd >= (safe_buffer_usd + oracle_margin):
             # Cửa UP thắng gần như tuyệt đối
             side = "UP"
             share_price = market.best_ask_up
-        elif buffer_usd <= -safe_buffer_usd:
+        elif buffer_usd <= -(safe_buffer_usd + oracle_margin):
             # Cửa DOWN thắng gần như tuyệt đối
             side = "DOWN"
             share_price = market.best_ask_down
@@ -288,7 +297,7 @@ class LimitlessConnector:
                 expected_roi_pct=Decimal("0"),
                 allocated_usd=Decimal("0"),
                 is_safe=False,
-                rejection_reason=f"Khoảng cách quá mỏng ({abs(buffer_usd):.2f} USD < {safe_buffer_usd:.2f} USD ngưỡng an toàn)"
+                rejection_reason=f"Khoảng cách chưa đủ an toàn ({abs(buffer_usd):.2f} USD < {safe_buffer_usd + oracle_margin:.2f} USD ngưỡng động + Oracle margin)"
             )
 
         # Kiểm tra giá share: Chỉ mua nếu giá <= $0.92 (đảm bảo lãi ròng >= 8.7%)

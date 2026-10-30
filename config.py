@@ -48,6 +48,14 @@ class EngineConfig:
     MIN_PROFIT_HURDLE_USDC: Decimal = Decimal("0.02")
     TIMEOUT_LEGGING_MS: int = 1200
     
+    # Paper Trading Realism & Anti-Hallucination Controls
+    MAX_CONCURRENT_PAPER_POSITIONS: int = 3   # Tối đa 3 vị thế mở cùng lúc (chống dồn rủi ro)
+    SIMULATED_EXECUTION_LATENCY_MS: int = 200 # Phạt trễ 200ms mô phỏng ký ví và gửi RPC
+    ORACLE_SAFETY_MARGIN_BTC: Decimal = Decimal("50.00") # Biên an toàn chống lệch pha Chainlink vs Binance
+    ORACLE_SAFETY_MARGIN_ETH: Decimal = Decimal("3.00")
+    DAILY_REPORT_HOURS_VN: list = (10, 22)    # 10:00 sáng và 22:00 đêm Việt Nam
+    SQLITE_DB_PATH: str = os.getenv("SQLITE_DB_PATH", "vanta_paper_ledger.db")
+    
     # Network Endpoints
     POLYMARKET_GAMMA_API: str = "https://gamma-api.polymarket.com"
     POLYMARKET_CLOB_REST: str = "https://clob.polymarket.com"

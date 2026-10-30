@@ -43,13 +43,6 @@ async def background_scanner_loop():
                     if opp.est_net_profit >= CONFIG.MIN_PROFIT_HURDLE_USDC:
                         engine.execute_paper_trade(opp)
 
-                # Send daily digest at 20:00 (or every 24h)
-                now = datetime.now()
-                if now.hour == 20 and now.hour != last_digest_hour:
-                    last_digest_hour = now.hour
-                    if engine.telegram.is_configured:
-                        await engine.telegram.send_daily_digest(engine.get_telemetry_snapshot()["metrics"])
-
             await asyncio.sleep(CONFIG.SCAN_INTERVAL_SECONDS)
         except Exception as e:
             logger.error(f"Error in scanner loop: {e}")

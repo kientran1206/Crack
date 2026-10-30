@@ -32,6 +32,8 @@ from connectors.grassroots_feed import GrassrootsSportsUniverse
 from connectors.espn_scoreboard import EspnScoreboardConnector
 from connectors.limitless import LimitlessConnector, LimitlessSignal
 from core.limitless_engine import LimitlessArbitrageWatcher
+from core.paper_database import PaperDatabase
+from core.daily_reporter import AutomatedDailyReporter
 
 logger = logging.getLogger("ArbEngine")
 
@@ -50,12 +52,21 @@ class QuantitativeArbitrageEngine:
         self.telegram = TelegramNotifier(CONFIG.TELEGRAM_BOT_TOKEN, CONFIG.TELEGRAM_CHAT_ID)
         self.executor = LiveOnChainExecutor(CONFIG.POLYGON_RPC_URL, CONFIG.PRIVATE_KEY, dry_run=CONFIG.DRY_RUN)
         
-        # Limitless Exchange (Base L2) Real Arbitrage & Late-Cycle Watcher
+        # Paper Trading Database & Limitless Watcher
+        self.db = PaperDatabase()
         self.limitless = LimitlessConnector(dry_run=CONFIG.DRY_RUN)
         self.limitless_watcher = LimitlessArbitrageWatcher(
             connector=self.limitless,
             bankroll_usdc=self.ledger.total_balance,
-            on_signal_callback=self._handle_limitless_signal
+            on_signal_callback=self._handle_limitless_signal,
+            db=self.db,
+            ledger=self.ledger,
+            telegram=self.telegram
+        )
+        self.daily_reporter = AutomatedDailyReporter(
+            db=self.db,
+            telegram_bot=self.telegram,
+            ledger=self.ledger
         )
 
         # Sub-5ms Streaming & 5,000+ Grassroots Modules
@@ -148,6 +159,7 @@ class QuantitativeArbitrageEngine:
 
         # 4. Start Limitless Exchange Binance WebSocket & Late-Cycle Watcher
         asyncio.create_task(self.limitless_watcher.run_binance_stream())
+        asyncio.create_task(self.daily_reporter.run_loop())
 
         total_pairs = len(self.poly.active_markets) + len(self.sxbet.cached_markets) + len(self.espn_scoreboard.cached_fixtures)
 

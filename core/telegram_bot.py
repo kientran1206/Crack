@@ -36,6 +36,7 @@ class TelegramCommandHandler:
         url = f"https://api.telegram.org/bot{self.bot_token}/setMyCommands"
         commands = [
             {"command": "dashboard", "description": "🎛️ Bảng điều khiển nút bấm 1 chạm"},
+            {"command": "daily_report", "description": "📊 Báo cáo kiểm toán PnL (10h/22h)"},
             {"command": "limitless", "description": "🚀 Săn kèo nến 1h Limitless (Base L2)"},
             {"command": "balance", "description": "💼 Số dư vốn & Báo cáo PnL"},
             {"command": "wallet", "description": "💳 Ví giao dịch & Nạp on-chain"},
@@ -110,6 +111,9 @@ class TelegramCommandHandler:
             "inline_keyboard": [
                 [
                     {"text": "🚀 SĂN KÈO LIMITLESS (BASE L2)", "callback_data": "menu_limitless"}
+                ],
+                [
+                    {"text": "📊 BÁO CÁO PnL 24H (10H/22H)", "callback_data": "menu_daily_report"}
                 ],
                 [
                     {"text": "💼 Số Dư & PnL", "callback_data": "menu_balance"},
@@ -264,6 +268,21 @@ class TelegramCommandHandler:
             await self.answer_callback(query_id, "🔄 Đã cập nhật số liệu mới nhất!")
             await self.edit_message(message_id, self.render_dashboard_text(), reply_markup=self.get_dashboard_markup())
 
+        elif data == "menu_daily_report":
+            await self.answer_callback(query_id, "📊 Đang xuất báo cáo kiểm toán PnL...")
+            from core.daily_reporter import format_audit_report
+            watcher_db = getattr(self.engine.limitless_watcher, "db", None)
+            if not watcher_db:
+                from core.paper_database import PaperDatabase
+                watcher_db = PaperDatabase()
+            report_text = format_audit_report(
+                db=watcher_db,
+                current_balance=self.ledger.total_balance,
+                starting_balance=self.ledger.starting_balance,
+                title_suffix="(Yêu Cầu Tức Thời)"
+            )
+            await self.edit_message(message_id, report_text, reply_markup=self.get_back_markup())
+
         elif data == "toggle_mode":
             is_currently_live = not self.executor.dry_run
             if not is_currently_live:
@@ -335,12 +354,12 @@ class TelegramCommandHandler:
                 f"<i>Khớp lệnh Orderbook EIP-712 Off-Chain | Maker 0% Gas & 0% Phí Sàn</i>\n\n"
                 f"🏛️ <b>Mạng lưới:</b> Base L2 (Chain ID: 8453)\n"
                 f"📡 <b>Oracle thanh toán:</b> <b>Chainlink Data Streams</b> (oracle-candles)\n"
-                f"⏱️ <b>Kỳ hạn săn:</b> Nến 1 Giờ (Hourly) & Nến 5 Phút (Late-Cycle)\n\n"
+                f"⏱️ <b>Kỳ hạn săn:</b> Nến 1 Giờ (Hourly) Chống Dao Rơi (Nghiêm Cấm Nến 5m/15m)\n\n"
                 f"🛡️ <b>BỘ QUY TẮC BẢO VỆ VỐN ĐÃ ĐƯỢC CLAUDE OPUS DUYỆT:</b>\n"
-                f"• <b>Quy mô cược (Vốn $10):</b> Tối đa <b>$0.50 – $1.00/lệnh</b> (Triệt tiêu Ruin Probability)\n"
-                f"• <b>Buffer an toàn:</b> BTC $\\ge$ $250 | ETH $\\ge$ $15 (Tránh râu nến)\n"
+                f"• <b>Quy mô cược (Vốn $10):</b> Tối đa <b>$0.20 – $0.50/lệnh</b> (Triệt tiêu Ruin Probability)\n"
+                f"• <b>Buffer động theo thời gian:</b> BTC $\\ge$ $350 - $750 | ETH $\\ge$ $21 - $45\n"
                 f"• <b>Vùng chết (Dead Zone):</b> <b>Đóng băng 90 giây cuối</b> (Chống Reject Storm)\n"
-                f"• <b>Lệnh cược:</b> Ép cờ <code>PostOnly: true</code> (Nhận 0% phí Maker, cấm Taker)\n"
+                f"• <b>Khóa vốn Escrow:</b> Quyết toán nến thật, cập nhật PnL 10h sáng và 22h đêm\n"
                 f"• <b>Hủy lệnh khẩn cấp:</b> REST API <code>/orders/cancel-all</code> khi mất kết nối > 2s\n\n"
                 f"👉 <i>Bấm 'Quét Tín Hiệu Săn Kèo Ngay' để tìm cơ hội lệch giá nến hiện tại!</i>"
             )
@@ -503,19 +522,32 @@ class TelegramCommandHandler:
 
         if command in ("/start", "/dashboard", "/menu"):
             await self.send_message(self.render_dashboard_text(), reply_markup=self.get_dashboard_markup())
+        elif command in ("/daily_report", "/report"):
+            from core.daily_reporter import format_audit_report
+            watcher_db = getattr(self.engine.limitless_watcher, "db", None)
+            if not watcher_db:
+                from core.paper_database import PaperDatabase
+                watcher_db = PaperDatabase()
+            report_text = format_audit_report(
+                db=watcher_db,
+                current_balance=self.ledger.total_balance,
+                starting_balance=self.ledger.starting_balance,
+                title_suffix="(Yêu Cầu Tức Thời)"
+            )
+            await self.send_message(report_text, reply_markup=self.get_back_markup())
         elif command == "/limitless":
             text = (
                 f"🚀 <b>LIMITLESS EXCHANGE // CHUYÊN CƠ SĂN NẾN 1H (BASE L2)</b>\n"
                 f"<i>Khớp lệnh Orderbook EIP-712 Off-Chain | Maker 0% Gas & 0% Phí Sàn</i>\n\n"
                 f"🏛️ <b>Mạng lưới:</b> Base L2 (Chain ID: 8453)\n"
                 f"📡 <b>Oracle thanh toán:</b> <b>Chainlink Data Streams</b> (oracle-candles)\n"
-                f"⏱️ <b>Kỳ hạn săn:</b> Nến 1 Giờ (Hourly) & Nến 5 Phút (Late-Cycle)\n\n"
+                f"⏱️ <b>Kỳ hạn săn:</b> Nến 1 Giờ (Hourly) Chống Dao Rơi (Nghiêm Cấm Nến 5m/15m)\n\n"
                 f"🛡️ <b>BỘ QUY TẮC BẢO VỆ VỐN ĐÃ ĐƯỢC CLAUDE OPUS DUYỆT:</b>\n"
-                f"• <b>Quy mô cược (Vốn $10):</b> Tối đa <b>$0.50 – $1.00/lệnh</b> (Triệt tiêu Ruin Probability)\n"
-                f"• <b>Buffer an toàn:</b> BTC $\\ge$ $250 | ETH $\\ge$ $15 (Tránh râu nến)\n"
+                f"• <b>Quy mô cược (Vốn $10):</b> Tối đa <b>$0.20 – $0.50/lệnh</b> (Triệt tiêu Ruin Probability)\n"
+                f"• <b>Buffer động theo thời gian:</b> BTC $\\ge$ $350 - $750 | ETH $\\ge$ $21 - $45\n"
                 f"• <b>Vùng chết (Dead Zone):</b> <b>Đóng băng 90 giây cuối</b> (Chống Reject Storm)\n"
-                f"• <b>Lệnh cược:</b> Ép cờ <code>PostOnly: true</code> (Nhận 0% phí Maker, cấm Taker)\n"
-                f"• <b>Hủy lệnh khẩn cấp:</b> REST API <code>/orders/cancel-all</code> khi mất kết nối > 2s\n\n"
+                f"• <b>Khóa vốn Escrow:</b> Quyết toán theo giá đóng nến thực tế (Win ăn, Thua mất)\n"
+                f"• <b>Báo cáo PnL:</b> Tự động 10h sáng và 22h đêm lên Telegram\n\n"
                 f"👉 <i>Bấm các nút bên dưới để điều khiển:</i>"
             )
             await self.send_message(text, reply_markup=self.get_limitless_markup())

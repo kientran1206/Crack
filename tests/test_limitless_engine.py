@@ -47,9 +47,12 @@ def test_late_cycle_convergence_safe_signal():
         volume_24h=Decimal("50000")
     )
 
+    # Còn 5 phút (300s): Dynamic time multiplier = 1 + 300/300 = 2.0x
+    # Safe buffer = $250 * 2.0 = $500. Oracle margin = $50 -> Tổng yêu cầu: $550
+    # Spot $98,600 (Cách Strike +$600 > $550) -> Đạt chuẩn an toàn tuyệt đối
     signal = connector.evaluate_late_cycle_convergence(
         market=market,
-        current_spot=Decimal("98450"),
+        current_spot=Decimal("98600"),
         bankroll_usdc=Decimal("10.00")
     )
 
@@ -91,7 +94,7 @@ def test_rejection_buffer_too_thin():
 
     assert signal.is_safe is False
     assert signal.recommended_side == "NONE"
-    assert "ngưỡng an toàn" in signal.rejection_reason
+    assert "chưa đủ an toàn" in signal.rejection_reason
 
 
 def test_rejection_share_price_too_expensive():
@@ -118,7 +121,7 @@ def test_rejection_share_price_too_expensive():
 
     signal = connector.evaluate_late_cycle_convergence(
         market=market,
-        current_spot=Decimal("98500"),
+        current_spot=Decimal("98700"),  # Buffer +$700 > $550 an toàn
         bankroll_usdc=Decimal("10.00")
     )
 
@@ -231,4 +234,4 @@ def test_rejection_of_knife_catching_short_timeframe():
     )
 
     assert signal.is_safe is False
-    assert "Bác bỏ nến 5m/15m" in signal.rejection_reason
+    assert "Bác bỏ nến ngắn" in signal.rejection_reason

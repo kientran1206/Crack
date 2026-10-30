@@ -3,17 +3,23 @@ prediction_bot/core/limitless_engine.py
 Engine giám sát thời gian thực và tự động săn kèo Late-Cycle Convergence trên Limitless Exchange (Base L2).
 Tích hợp:
 - Binance WebSocket stream (Cập nhật giá BTC/ETH mỗi 100ms)
-- Bộ lọc Buffer & Volatility an toàn cho tài khoản $10 USD
-- Trình tạo chữ ký EIP-712 off-chain không tốn gas
+- Bộ lọc Dynamic Time-Decay Buffer & Anti-Knife-Catching Regex
+- Quản lý vòng đời Paper Trading thực chiến 100% (Khóa vốn Escrow, độ trễ 200ms, độ sâu orderbook)
+- Quyết toán bằng Oracle sống tại thời điểm đóng nến (Win ăn payout, Thua mất sạch vốn)
+- Ghi sổ cái SQLite vĩnh viễn (PaperDatabase)
 """
-
 import asyncio
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 import json
 import logging
 import time
 from typing import Callable, Dict, List, Optional
+import urllib.request
 import websockets
+
+from config import CONFIG
+from core.paper_database import PaperDatabase
 
 try:
     from prediction_bot.connectors.limitless import LimitlessConnector, LimitlessMarket, LimitlessSignal
@@ -21,11 +27,13 @@ except ImportError:
     from connectors.limitless import LimitlessConnector, LimitlessMarket, LimitlessSignal
 
 logger = logging.getLogger("limitless_engine")
+VN_TZ = timezone(timedelta(hours=7))
 
 
 class LimitlessArbitrageWatcher:
     """
-    Watcher liên tục lắng nghe Binance WebSocket và đối soát với Orderbook Limitless.
+    Watcher liên tục lắng nghe Binance WebSocket, đối soát Orderbook Limitless,
+    khóa vốn vào lệnh và quyết toán sống khi nến đóng.
     """
     BINANCE_WS_URL = "wss://stream.binance.com:9443/ws/btcusdt@ticker/ethusdt@ticker/solusdt@ticker"
 
@@ -33,13 +41,19 @@ class LimitlessArbitrageWatcher:
         self,
         connector: LimitlessConnector,
         bankroll_usdc: Decimal = Decimal("10.00"),
-        on_signal_callback: Optional[Callable[[LimitlessSignal], None]] = None
+        on_signal_callback: Optional[Callable[[LimitlessSignal], None]] = None,
+        db: Optional[PaperDatabase] = None,
+        ledger=None,
+        telegram=None
     ):
         self.connector = connector
         self.bankroll_usdc = bankroll_usdc
         self.on_signal_callback = on_signal_callback
+        self.db = db or PaperDatabase()
+        self.ledger = ledger
+        self.telegram = telegram
         
-        # Cache giá Spot thời gian thực
+        # Cache giá Spot thời gian thực từ Binance WebSocket
         self.spot_prices: Dict[str, Decimal] = {
             "BTC": Decimal("0"),
             "ETH": Decimal("0"),
@@ -48,6 +62,7 @@ class LimitlessArbitrageWatcher:
         self.is_running = False
         self._last_market_refresh = 0
         self._active_markets: List[LimitlessMarket] = []
+        self._market_by_slug: Dict[str, LimitlessMarket] = {}
 
     def update_spot_price(self, symbol: str, price: Decimal):
         """Cập nhật giá Spot từ Binance."""
@@ -61,6 +76,7 @@ class LimitlessArbitrageWatcher:
         if now - self._last_market_refresh > 60:
             logger.info("Đang làm mới danh sách thị trường Limitless...")
             self._active_markets = self.connector.fetch_active_markets()
+            self._market_by_slug = {m.slug: m for m in self._active_markets}
             self._last_market_refresh = now
             logger.info("Đã nạp %d thị trường từ Limitless.", len(self._active_markets))
 
@@ -86,11 +102,219 @@ class LimitlessArbitrageWatcher:
 
         return signals
 
+    async def execute_paper_entry(self, sig: LimitlessSignal, market: LimitlessMarket) -> bool:
+        """
+        Thực thi vào lệnh Paper Trading 100% như thật:
+        1. Kiểm tra giới hạn số vị thế mở đồng thời (tối đa 3).
+        2. Phạt trễ 200ms mô phỏng ký ví và gửi giao dịch RPC.
+        3. Khóa vốn thực tế vào Escrow (không cộng lãi ngay).
+        4. Lưu trữ trạng thái OPEN vào SQLite.
+        5. Thông báo chi tiết lên Telegram.
+        """
+        # Kiểm tra trùng lặp: nếu thị trường này đã có lệnh OPEN thì không vào thêm
+        open_positions = self.db.get_open_positions()
+        for pos in open_positions:
+            if pos["market_slug"] == market.slug:
+                return False
+
+        # Kiểm soát rủi ro vốn: Tối đa MAX_CONCURRENT_PAPER_POSITIONS vị thế cùng lúc
+        if len(open_positions) >= CONFIG.MAX_CONCURRENT_PAPER_POSITIONS:
+            logger.info("Từ chối vào lệnh %s: Đã đạt giới hạn %d vị thế mở cùng lúc.", market.slug, CONFIG.MAX_CONCURRENT_PAPER_POSITIONS)
+            return False
+
+        cost = sig.allocated_usd
+        if self.ledger and self.ledger.free_balance < cost:
+            logger.info("Từ chối vào lệnh %s: Số dư khả dụng không đủ ($%.2f < $%.2f).", market.slug, self.ledger.free_balance, cost)
+            return False
+
+        # Phạt trễ 200ms mô phỏng ký EIP-712 và độ trễ mạng
+        await asyncio.sleep(float(CONFIG.SIMULATED_EXECUTION_LATENCY_MS) / 1000.0)
+
+        shares = (cost / sig.share_price).quantize(Decimal("0.0001"))
+        pos_id = f"POS_{market.target_asset}_{int(time.time()*1000)}"
+
+        # Khóa vốn trên Sổ cái
+        if self.ledger:
+            self.ledger.reserve_capital(pos_id, cost)
+
+        # Ghi nhận vào SQLite
+        entry_ts = int(time.time())
+        self.db.record_open_position(
+            position_id=pos_id,
+            market_slug=market.slug,
+            title=market.title,
+            asset=market.target_asset,
+            side=sig.recommended_side,
+            strike_price=market.strike_price,
+            entry_spot=sig.spot_price,
+            share_price=sig.share_price,
+            shares_count=shares,
+            cost_usd=cost,
+            entry_time=entry_ts,
+            expiry_time=market.end_time,
+            note=f"Buffer: {sig.buffer_usd:+.2f} USD ({sig.buffer_pct:+.2f}%)"
+        )
+
+        logger.info(
+            "VỊ THẾ PAPER VÀO VỐN: %s | Cửa: %s | Vốn khóa: $%s | Strike: $%s | Spot: $%s",
+            market.title, sig.recommended_side, cost, market.strike_price, sig.spot_price
+        )
+
+        # Gửi thông báo Telegram
+        if self.telegram:
+            expiry_dt = datetime.fromtimestamp(market.end_time, tz=VN_TZ)
+            msg = (
+                f"🎯 <b>[V] VỊ THẾ PAPER THỰC CHIẾN VỪA VÀO VỐN!</b>\n"
+                f"<i>Cơ chế: Khóa vốn Escrow 100% | Phạt trễ 200ms | Quyết toán nến thật</i>\n\n"
+                f"🏛️ <b>Sàn:</b> Limitless Exchange (Base L2)\n"
+                f"🎯 <b>Thị trường:</b> {market.title}\n"
+                f"⚖️ <b>Cửa chọn:</b> <b>{sig.recommended_side}</b> (Giá mua: <b>${sig.share_price:.2f}</b>)\n"
+                f"💵 <b>Vốn khóa (Escrow):</b> <b>${cost:.2f} USDC</b> (Số share: {shares})\n"
+                f"🛡️ <b>Buffer lúc vào:</b> <b>{sig.buffer_usd:+.2f} USD</b> ({sig.buffer_pct:+.2f}%)\n"
+                f"⏱️ <b>Thời điểm chốt nến:</b> <code>{expiry_dt.strftime('%H:%M:%S %d/%m')}</code> (Còn {sig.seconds_to_expiry}s)\n\n"
+                f"👉 <i>Vốn đang được giam an toàn. Khi nến đóng, bot sẽ đọc giá Oracle để xác định Thắng/Thua!</i>"
+            )
+            await self.telegram.send_message(msg)
+
+        return True
+
+    async def fetch_true_settlement_price(self, asset: str) -> Decimal:
+        """
+        Lấy giá Spot thực tế từ Binance API lúc đóng nến để quyết toán.
+        """
+        try:
+            symbol = f"{asset}USDT"
+            url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode())
+                return Decimal(str(data.get("price", "0")))
+        except Exception as e:
+            logger.warning("Không thể fetch giá đóng nến Binance API (%s), dùng giá stream gần nhất: %s", asset, e)
+            return self.spot_prices.get(asset, Decimal("0"))
+
+    async def settlement_worker_loop(self):
+        """
+        Vòng lặp nền giám sát và quyết toán các vị thế đã đến giờ đáo hạn (Expiry Settlement).
+        """
+        logger.info("Settlement Worker Loop đã khởi động: Giám sát nến đáo hạn...")
+        while self.is_running:
+            try:
+                now_ts = int(time.time())
+                open_positions = self.db.get_open_positions()
+
+                for pos in open_positions:
+                    if now_ts >= pos["expiry_time"]:
+                        # Đã đến giờ chốt nến!
+                        pos_id = pos["position_id"]
+                        asset = pos["asset"]
+                        side = pos["side"]
+                        strike = Decimal(str(pos["strike_price"]))
+                        cost = Decimal(str(pos["cost_usd"]))
+                        shares = Decimal(str(pos["shares_count"]))
+
+                        settled_spot = await self.fetch_true_settlement_price(asset)
+                        if settled_spot <= Decimal("0"):
+                            settled_spot = self.spot_prices.get(asset, strike)
+
+                        # Phán quyết Thắng / Thua theo quy chuẩn Oracle
+                        is_win = False
+                        if side == "UP" and settled_spot > strike:
+                            is_win = True
+                        elif side == "DOWN" and settled_spot < strike:
+                            is_win = True
+
+                        if is_win:
+                            outcome = "WIN"
+                            payout = shares * Decimal("1.00")
+                            taker_fees = cost * Decimal("0.001") # Phí giao dịch 0.1%
+                            gas_fee = Decimal("0.001")           # Phí L2 gas Base
+                            net_pnl = payout - cost - taker_fees - gas_fee
+                            
+                            # Giải phóng vốn khóa và cộng lãi ròng trên Sổ cái
+                            if self.ledger:
+                                self.ledger.locked_balance = max(Decimal("0.00"), self.ledger.locked_balance - cost)
+                                self.ledger.total_balance += (payout - cost - taker_fees - gas_fee)
+                                self.ledger.free_balance = self.ledger.total_balance - self.ledger.locked_balance
+                                self.ledger.winning_trades += 1
+                                self.ledger.total_pnl += net_pnl
+                                self.ledger.active_reservations.pop(pos_id, None)
+
+                            self.db.settle_position(
+                                position_id=pos_id,
+                                settled_spot=settled_spot,
+                                outcome="WIN",
+                                payout_usd=payout,
+                                net_pnl_usd=net_pnl,
+                                note=f"Thắng: Chốt ${settled_spot:,.2f} vs Strike ${strike:,.2f}"
+                            )
+
+                            logger.info("VỊ THẾ THẮNG [%s]: Net PnL +$%.3f USDC", pos_id, net_pnl)
+
+                            if self.telegram:
+                                msg = (
+                                    f"🏆 <b>[V] KẾT QUẢ QUYẾT TOÁN: THẮNG KÈO!</b>\n"
+                                    f"🎯 <b>Thị trường:</b> {pos['title']}\n"
+                                    f"⚖️ <b>Cửa cược:</b> {side} | <b>Strike:</b> ${strike:,.2f}\n"
+                                    f"🏁 <b>Giá chốt nến thực tế:</b> <b>${settled_spot:,.2f}</b> (Cách strike: {settled_spot - strike:+.2f}$)\n\n"
+                                    f"💵 <b>Vốn gốc:</b> ${cost:.2f} USDC\n"
+                                    f"💰 <b>Lãi ròng thực nhận:</b> <b>+${net_pnl:.3f} USDC</b> (ROI: <b>+{net_pnl/cost*100:.1f}%</b>)\n"
+                                    f"📈 <b>Số dư ví khả dụng:</b> <b>${self.ledger.free_balance if self.ledger else cost:.2f} USDC</b>"
+                                )
+                                await self.telegram.send_message(msg)
+
+                        else:
+                            outcome = "LOSS"
+                            payout = Decimal("0.00")
+                            net_pnl = -cost
+
+                            # Trừ sạch vốn cược trên Sổ cái (bị phạt mất tiền)
+                            if self.ledger:
+                                self.ledger.locked_balance = max(Decimal("0.00"), self.ledger.locked_balance - cost)
+                                self.ledger.total_balance -= cost
+                                self.ledger.free_balance = self.ledger.total_balance - self.ledger.locked_balance
+                                self.ledger.losing_trades += 1
+                                self.ledger.total_pnl += net_pnl
+                                self.ledger.active_reservations.pop(pos_id, None)
+
+                            self.db.settle_position(
+                                position_id=pos_id,
+                                settled_spot=settled_spot,
+                                outcome="LOSS",
+                                payout_usd=payout,
+                                net_pnl_usd=net_pnl,
+                                note=f"Thua: Rút râu chốt ${settled_spot:,.2f} vs Strike ${strike:,.2f}"
+                            )
+
+                            logger.warning("VỊ THẾ THUA [%s]: Bị rút râu mất -$%.2f USDC", pos_id, cost)
+
+                            if self.telegram:
+                                msg = (
+                                    f"❌ <b>[V] KẾT QUẢ QUYẾT TOÁN: THUA KÈO (RÚT RÂU)!</b>\n"
+                                    f"🎯 <b>Thị trường:</b> {pos['title']}\n"
+                                    f"⚖️ <b>Cửa cược:</b> {side} | <b>Strike:</b> ${strike:,.2f}\n"
+                                    f"🏁 <b>Giá chốt nến thực tế:</b> <b>${settled_spot:,.2f}</b>\n\n"
+                                    f"📉 <b>Vốn mất:</b> <b>-${cost:.2f} USDC</b>\n"
+                                    f"🔍 <b>Nguyên nhân:</b> Nến đảo chiều đâm xuyên qua Strike vào phút chót.\n"
+                                    f"📉 <b>Số dư ví còn lại:</b> <b>${self.ledger.free_balance if self.ledger else Decimal('0'):.2f} USDC</b>"
+                                )
+                                await self.telegram.send_message(msg)
+
+                await asyncio.sleep(5)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error("Error in settlement worker loop: %s", e)
+                await asyncio.sleep(5)
+
     async def run_binance_stream(self):
         """Lắng nghe WebSocket Binance để cập nhật giá tức thì từng tích tắc."""
         self.is_running = True
         logger.info("Bắt đầu kết nối Binance WebSocket: %s", self.BINANCE_WS_URL)
         
+        # Khởi động Settlement Worker Loop song song
+        asyncio.create_task(self.settlement_worker_loop())
+
         while self.is_running:
             try:
                 async with websockets.connect(self.BINANCE_WS_URL, ping_interval=20) as ws:
@@ -100,7 +324,7 @@ class LimitlessArbitrageWatcher:
                         data = json.loads(msg)
                         
                         symbol = data.get("s", "")
-                        price_str = data.get("c", "0")  # Last price
+                        price_str = data.get("c", "0")
                         if symbol and price_str:
                             self.update_spot_price(symbol, Decimal(price_str))
 
@@ -113,7 +337,13 @@ class LimitlessArbitrageWatcher:
                                     "[TÍN HIỆU NGON] Kèo: %s | Cửa: %s | Giá share: %s | Lãi dự kiến: +%.1f%% | Cược: $%s",
                                     opp.market_slug, opp.recommended_side, opp.share_price, opp.expected_roi_pct, opp.allocated_usd
                                 )
+                                market = self._market_by_slug.get(opp.market_slug)
+                                if market:
+                                    # Tự động thực thi vào lệnh Paper thực chiến
+                                    asyncio.create_task(self.execute_paper_entry(opp, market))
 
+            except asyncio.CancelledError:
+                break
             except Exception as e:
                 logger.warning("Mất kết nối WebSocket Binance (%s), thử lại sau 3s...", e)
                 await asyncio.sleep(3)
