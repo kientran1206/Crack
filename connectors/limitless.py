@@ -195,6 +195,27 @@ class LimitlessConnector:
         # Vốn nhỏ $10 chia đều thành các vé cược siêu nhỏ từ $0.20 - $0.50 (5% vốn) để tối đa hóa số lần quay vòng.
         max_bet_amount = max(Decimal("0.20"), min(bankroll_usdc * Decimal("0.05"), Decimal("0.80")))
 
+        # LOẠI BỎ TRIỆT ĐỂ BẮT DAO RƠI (Chống râu nến giật khung siêu ngắn theo phản xạ chuẩn của dj):
+        # Nghiêm cấm cược trên nến 5 Phút (5 Min) và 15 Phút (15 Min) vì 85% biến động là nhiễu giật râu!
+        # CHỈ CHO PHÉP săn trên nến 1 Giờ (Hourly) hoặc Daily có đà quán tính vững chắc.
+        title_lower = market.title.lower()
+        if "5 min" in title_lower or "15 min" in title_lower:
+            return LimitlessSignal(
+                market_slug=market.slug,
+                asset=market.target_asset,
+                strike_price=market.strike_price,
+                spot_price=current_spot,
+                buffer_usd=buffer_usd,
+                buffer_pct=buffer_pct,
+                seconds_to_expiry=seconds_left,
+                recommended_side="NONE",
+                share_price=Decimal("0"),
+                expected_roi_pct=Decimal("0"),
+                allocated_usd=Decimal("0"),
+                is_safe=False,
+                rejection_reason="Bác bỏ nến 5m/15m: Khung quá ngắn, nguy cơ bắt dao rơi và râu nến quét phút chót"
+            )
+
         # Kiểm tra điều kiện thời gian: Chỉ săn ở 2 đến 10 phút cuối cùng
         if seconds_left > 600:
             return LimitlessSignal(

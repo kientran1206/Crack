@@ -191,3 +191,35 @@ def test_rejection_in_dead_zone():
 
     assert signal.is_safe is False
     assert "Vùng chết" in signal.rejection_reason
+
+
+def test_rejection_of_knife_catching_short_timeframe():
+    """
+    Kịch bản: Nến 5 phút hoặc 15 phút (bắt dao rơi).
+    Kỳ vọng: Bác bỏ hoàn toàn để chống rủi ro râu nến giật phút chót.
+    """
+    connector = LimitlessConnector(dry_run=True)
+    now = int(time.time())
+
+    market_5m = LimitlessMarket(
+        slug="btc-up-down-5-min",
+        title="BTC Up or Down - 5 Min",
+        target_asset="BTC",
+        strike_price=Decimal("98000"),
+        end_time=now + 180,  # Còn 3 phút
+        exchange_address="0x1234567890123456789012345678901234567890",
+        token_id_up=101,
+        token_id_down=102,
+        best_ask_up=Decimal("0.85"),
+        best_ask_down=Decimal("0.15"),
+        volume_24h=Decimal("50000")
+    )
+
+    signal = connector.evaluate_late_cycle_convergence(
+        market=market_5m,
+        current_spot=Decimal("98500"),
+        bankroll_usdc=Decimal("10.00")
+    )
+
+    assert signal.is_safe is False
+    assert "Bác bỏ nến 5m/15m" in signal.rejection_reason
