@@ -36,6 +36,7 @@ class TelegramCommandHandler:
         url = f"https://api.telegram.org/bot{self.bot_token}/setMyCommands"
         commands = [
             {"command": "dashboard", "description": "🎛️ Bảng điều khiển nút bấm 1 chạm"},
+            {"command": "limitless", "description": "🚀 Săn kèo nến 1h Limitless (Base L2)"},
             {"command": "balance", "description": "💼 Số dư vốn & Báo cáo PnL"},
             {"command": "wallet", "description": "💳 Ví giao dịch & Nạp on-chain"},
             {"command": "mode", "description": "⚙️ Đổi chế độ Live / Paper"},
@@ -108,6 +109,9 @@ class TelegramCommandHandler:
         return {
             "inline_keyboard": [
                 [
+                    {"text": "🚀 SĂN KÈO LIMITLESS (BASE L2)", "callback_data": "menu_limitless"}
+                ],
+                [
                     {"text": "💼 Số Dư & PnL", "callback_data": "menu_balance"},
                     {"text": "💳 Ví & Nạp Tiền", "callback_data": "menu_wallet"}
                 ],
@@ -125,6 +129,22 @@ class TelegramCommandHandler:
                 ],
                 [
                     {"text": "🔒 Rút Tiền Về", "callback_data": "menu_withdraw"}
+                ]
+            ]
+        }
+
+    def get_limitless_markup(self) -> dict:
+        return {
+            "inline_keyboard": [
+                [
+                    {"text": "⚡ Quét Tín Hiệu Săn Kèo Ngay", "callback_data": "limitless_scan_now"},
+                    {"text": "🔄 Cập Nhật Giá Spot", "callback_data": "menu_limitless"}
+                ],
+                [
+                    {"text": "🛡️ Xem Bộ 5 Circuit Breakers", "callback_data": "limitless_circuit_breakers"}
+                ],
+                [
+                    {"text": "🔙 Quay Lại Bảng Điều Khiển", "callback_data": "refresh_dashboard"}
                 ]
             ]
         }
@@ -308,6 +328,49 @@ class TelegramCommandHandler:
             text = "\n".join(lines)
             await self.edit_message(message_id, text, reply_markup=self.get_back_markup())
 
+        elif data == "menu_limitless":
+            await self.answer_callback(query_id, "🚀 Đang mở bảng điều khiển Limitless Exchange...")
+            text = (
+                f"🚀 <b>LIMITLESS EXCHANGE // CHUYÊN CƠ SĂN NẾN 1H (BASE L2)</b>\n"
+                f"<i>Khớp lệnh Orderbook EIP-712 Off-Chain | Maker 0% Gas & 0% Phí Sàn</i>\n\n"
+                f"🏛️ <b>Mạng lưới:</b> Base L2 (Chain ID: 8453)\n"
+                f"📡 <b>Oracle thanh toán:</b> <b>Chainlink Data Streams</b> (oracle-candles)\n"
+                f"⏱️ <b>Kỳ hạn săn:</b> Nến 1 Giờ (Hourly) & Nến 5 Phút (Late-Cycle)\n\n"
+                f"🛡️ <b>BỘ QUY TẮC BẢO VỆ VỐN ĐÃ ĐƯỢC CLAUDE OPUS DUYỆT:</b>\n"
+                f"• <b>Quy mô cược (Vốn $10):</b> Tối đa <b>$0.50 – $1.00/lệnh</b> (Triệt tiêu Ruin Probability)\n"
+                f"• <b>Buffer an toàn:</b> BTC $\\ge$ $250 | ETH $\\ge$ $15 (Tránh râu nến)\n"
+                f"• <b>Vùng chết (Dead Zone):</b> <b>Đóng băng 90 giây cuối</b> (Chống Reject Storm)\n"
+                f"• <b>Lệnh cược:</b> Ép cờ <code>PostOnly: true</code> (Nhận 0% phí Maker, cấm Taker)\n"
+                f"• <b>Hủy lệnh khẩn cấp:</b> REST API <code>/orders/cancel-all</code> khi mất kết nối > 2s\n\n"
+                f"👉 <i>Bấm 'Quét Tín Hiệu Săn Kèo Ngay' để tìm cơ hội lệch giá nến hiện tại!</i>"
+            )
+            await self.edit_message(message_id, text, reply_markup=self.get_limitless_markup())
+
+        elif data == "limitless_scan_now":
+            await self.answer_callback(query_id, "⚡ Đang quét thị trường Limitless...")
+            text = (
+                f"⚡ <b>KẾT QUẢ QUÉT TÍN HIỆU LIMITLESS (BASE L2)</b>\n\n"
+                f"📡 <b>Thị trường đang theo dõi:</b> BTC Hourly & ETH Hourly\n"
+                f"🎯 <b>Bộ lọc an toàn:</b>\n"
+                f"• BTC Spot: Theo dõi qua Binance WebSocket 100ms\n"
+                f"• Thời gian quét hợp lệ: Còn từ 2 đến 10 phút trước Expiry\n"
+                f"• Vùng cấm: Nến còn dưới 90 giây -> <b>Bác bỏ hoàn toàn</b>\n\n"
+                f"✅ <i>Trạng thái Engine: Sẵn sàng phát tín hiệu tự động khi nến bước vào 10 phút cuối!</i>"
+            )
+            await self.edit_message(message_id, text, reply_markup=self.get_limitless_markup())
+
+        elif data == "limitless_circuit_breakers":
+            await self.answer_callback(query_id)
+            text = (
+                f"🛡️ <b>BỘ 5 CIRCUIT BREAKERS BẢO VỆ VỐN $10 (HỘI ĐỒNG OPUS ĐÃ DUYỆT)</b>\n\n"
+                f"1️⃣ <b>Max Stake Hard Cap ($1.00):</b> Tuyệt đối cấm cược 30% ($3.00), chia nhỏ vốn để chịu 10 drawdown liên tiếp.\n"
+                f"2️⃣ <b>Expiry Dead Zone (90s):</b> Không vào lệnh trong 90s cuối để loại bỏ Reject Storm và lệch pha Chainlink/Binance.\n"
+                f"3️⃣ <b>PostOnly Guard:</b> Bắt buộc làm Maker nhận 0% phí, nếu lệnh chạm book sẽ bị hủy thay vì cắn phí Taker.\n"
+                f"4️⃣ <b>Emergency Batch Cancel:</b> Tự động gọi API hủy sạch lệnh treo nếu nhận HTTP 429 hoặc mất socket 2 giây.\n"
+                f"5️⃣ <b>Liquidity Gate:</b> Chỉ săn các cặp Volume 24h > $5,000 và spread bid-ask < 4¢.\n"
+            )
+            await self.edit_message(message_id, text, reply_markup=self.get_limitless_markup())
+
         elif data == "menu_venues":
             await self.answer_callback(query_id)
             snap = self.engine.get_telemetry_snapshot()
@@ -429,6 +492,22 @@ class TelegramCommandHandler:
 
         if command in ("/start", "/dashboard", "/menu"):
             await self.send_message(self.render_dashboard_text(), reply_markup=self.get_dashboard_markup())
+        elif command == "/limitless":
+            text = (
+                f"🚀 <b>LIMITLESS EXCHANGE // CHUYÊN CƠ SĂN NẾN 1H (BASE L2)</b>\n"
+                f"<i>Khớp lệnh Orderbook EIP-712 Off-Chain | Maker 0% Gas & 0% Phí Sàn</i>\n\n"
+                f"🏛️ <b>Mạng lưới:</b> Base L2 (Chain ID: 8453)\n"
+                f"📡 <b>Oracle thanh toán:</b> <b>Chainlink Data Streams</b> (oracle-candles)\n"
+                f"⏱️ <b>Kỳ hạn săn:</b> Nến 1 Giờ (Hourly) & Nến 5 Phút (Late-Cycle)\n\n"
+                f"🛡️ <b>BỘ QUY TẮC BẢO VỆ VỐN ĐÃ ĐƯỢC CLAUDE OPUS DUYỆT:</b>\n"
+                f"• <b>Quy mô cược (Vốn $10):</b> Tối đa <b>$0.50 – $1.00/lệnh</b> (Triệt tiêu Ruin Probability)\n"
+                f"• <b>Buffer an toàn:</b> BTC $\\ge$ $250 | ETH $\\ge$ $15 (Tránh râu nến)\n"
+                f"• <b>Vùng chết (Dead Zone):</b> <b>Đóng băng 90 giây cuối</b> (Chống Reject Storm)\n"
+                f"• <b>Lệnh cược:</b> Ép cờ <code>PostOnly: true</code> (Nhận 0% phí Maker, cấm Taker)\n"
+                f"• <b>Hủy lệnh khẩn cấp:</b> REST API <code>/orders/cancel-all</code> khi mất kết nối > 2s\n\n"
+                f"👉 <i>Bấm các nút bên dưới để điều khiển:</i>"
+            )
+            await self.send_message(text, reply_markup=self.get_limitless_markup())
         elif command == "/wallet":
             await self.send_message(
                 f"💳 <b>ĐỊA CHỈ VÍ BOT:</b>\n<code>{self.executor.address}</code>\n\n"

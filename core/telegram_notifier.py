@@ -66,6 +66,31 @@ class TelegramNotifier:
         )
         await self.send_message(msg)
 
+    async def notify_limitless_signal(self, sig):
+        """Bắn tín hiệu săn kèo Late-Cycle Convergence trên Limitless Exchange trực tiếp về Telegram dj."""
+        now = time.time()
+        if now - self.last_notify_ts < 10.0:
+            return  # Throttle 10s
+        self.last_notify_ts = now
+
+        mins = sig.seconds_to_expiry // 60
+        secs = sig.seconds_to_expiry % 60
+        time_str = f"{mins}m {secs}s"
+
+        msg = (
+            f"🚀 <b>[V] TÍN HIỆU SĂN KÈO LIMITLESS (BASE L2)!</b>\n\n"
+            f"🎯 <b>Thị trường:</b> <code>{sig.market_slug}</code>\n"
+            f"⏱️ <b>Thời gian còn lại:</b> <b>{time_str}</b>\n"
+            f"💎 <b>Tài sản:</b> {sig.asset} | Strike: <b>${sig.strike_price:,.2f}</b>\n"
+            f"⚡ <b>Giá Spot (Binance):</b> <b>${sig.spot_price:,.2f}</b>\n"
+            f"🛡️ <b>Buffer an toàn:</b> <b>{sig.buffer_usd:+,.2f} USD</b> ({sig.buffer_pct:+.2f}%)\n"
+            f"👉 <b>Cửa cược khuyến nghị:</b> <b>{sig.recommended_side}</b> (Giá share: {sig.share_price:.2f}¢)\n"
+            f"📈 <b>Lãi dự kiến:</b> <b>+{sig.expected_roi_pct:.1f}%</b> (Maker 0% gas)\n"
+            f"💵 <b>Vốn cược (Bảo vệ Bankroll $10):</b> <b>${sig.allocated_usd:.2f} USDC</b>\n\n"
+            f"🔒 <i>Chế độ: PostOnly: True | Oracle: Chainlink Data Streams</i>"
+        )
+        await self.send_message(msg)
+
     async def send_daily_digest(self, metrics: dict):
         """Send end-of-day summary digest to dj."""
         msg = (
