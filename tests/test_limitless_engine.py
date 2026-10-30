@@ -8,12 +8,21 @@ Kiểm tra:
 4. Bộ lọc thời gian: Từ chối lệnh khi > 10 phút hoặc < 60 giây.
 """
 
-from decimal import Decimal
+import os
+import sys
 import time
+from decimal import Decimal
 import pytest
 
-from prediction_bot.connectors.limitless import LimitlessConnector, LimitlessMarket, LimitlessSignal
-from prediction_bot.core.limitless_engine import LimitlessArbitrageWatcher
+# Ensure repo root is in sys.path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+try:
+    from connectors.limitless import LimitlessConnector, LimitlessMarket, LimitlessSignal
+    from core.limitless_engine import LimitlessArbitrageWatcher
+except ModuleNotFoundError:
+    from prediction_bot.connectors.limitless import LimitlessConnector, LimitlessMarket, LimitlessSignal
+    from prediction_bot.core.limitless_engine import LimitlessArbitrageWatcher
 
 
 def test_late_cycle_convergence_safe_signal():
