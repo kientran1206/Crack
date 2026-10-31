@@ -176,19 +176,32 @@ class LimitlessArbitrageWatcher:
             market.title, sig.recommended_side, cost, market.strike_price, sig.spot_price
         )
 
-        # Gửi thông báo Telegram (CHỈ GỬI KHI Ở CHẾ ĐỘ PAPER, BẬT LIVE THÌ TỰ ĐỘNG TẮT)
+        # Gửi thông báo Telegram chi tiết minh bạch: Đã vào bao nhiêu | Mốc nào | Lãi dự kiến
         if self.telegram and self.is_paper_mode():
             expiry_dt = datetime.fromtimestamp(market.end_time, tz=VN_TZ)
+            mins_left = sig.seconds_to_expiry // 60
+            secs_left = sig.seconds_to_expiry % 60
+            expected_profit_usd = (shares * Decimal("1.00")) - cost
+            free_bal = self.ledger.free_balance if self.ledger else Decimal("0.00")
+
             msg = (
-                f"🎯 <b>[V] VỊ THẾ PAPER THỰC CHIẾN VỪA VÀO VỐN!</b>\n"
-                f"<i>Lưu SQLite vĩnh viễn | Khóa vốn Escrow | Quyết toán nến thật</i>\n\n"
-                f"🏛️ <b>Sàn:</b> Limitless Exchange (Base L2)\n"
-                f"🎯 <b>Thị trường:</b> {market.title}\n"
-                f"⚖️ <b>Cửa chọn:</b> <b>{sig.recommended_side}</b> (Giá mua: <b>${sig.share_price:.2f}</b>)\n"
-                f"💵 <b>Vốn khóa (Escrow):</b> <b>${cost:.2f} USDC</b> (Số share: {shares})\n"
-                f"🛡️ <b>Buffer lúc vào:</b> <b>{sig.buffer_usd:+.2f} USD</b> ({sig.buffer_pct:+.2f}%)\n"
-                f"⏱️ <b>Thời điểm chốt nến:</b> <code>{expiry_dt.strftime('%H:%M:%S %d/%m')}</code> (Còn {sig.seconds_to_expiry}s)\n\n"
-                f"👉 <i>Đã lưu vào Sổ cái Paper. Khi nến đóng, bot sẽ đọc giá Oracle để báo cáo Thắng/Thua!</i>"
+                f"🎯 <b>[V] KÈO LIMITLESS VỪA VÀO VỐN THÀNH CÔNG!</b>\n"
+                f"<i>VỊ THẾ PAPER THỰC CHIẾN VỪA VÀO VỐN | Sàn: Limitless Exchange (Base L2)</i>\n\n"
+                f"📊 <b>Thị trường:</b> <code>{market.title}</code>\n"
+                f"⚖️ <b>Cửa cược:</b> <b>{sig.recommended_side}</b> (Giá mua: <b>${sig.share_price:.4f}</b>)\n\n"
+                f"💵 <b>ĐÃ VÀO BAO NHIÊU:</b>\n"
+                f"  • Vốn vào lệnh: <b>${cost:.2f} USDC</b>\n"
+                f"  • Số lượng share: <b>{shares} shares</b>\n"
+                f"  • Số dư ví còn lại: <b>${free_bal:.2f} USDC</b>\n\n"
+                f"📍 <b>MỐC ĐỐI CHIẾU:</b>\n"
+                f"  • Mốc Strike (Mở nến): <b>${market.strike_price:,.2f}</b>\n"
+                f"  • Giá Spot lúc vào: <b>${sig.spot_price:,.2f}</b>\n"
+                f"  • Khoảng cách an toàn (Buffer): <b>{sig.buffer_usd:+,.2f} USD</b> ({sig.buffer_pct:+.2f}%)\n"
+                f"  • Chốt nến lúc: <code>{expiry_dt.strftime('%H:%M:%S %d/%m')}</code> (Còn {mins_left}p {secs_left}s)\n\n"
+                f"💰 <b>LỢI NHUẬN DỰ KIẾN:</b>\n"
+                f"  • Lãi ròng dự kiến: <b>+${expected_profit_usd:.3f} USDC</b>\n"
+                f"  • Tỷ suất sinh lời (ROI): <b>+{sig.expected_roi_pct:.1f}%</b>\n"
+                f"  • Kịch bản chốt: Nếu nến đóng đúng cửa <b>{sig.recommended_side}</b>, thu về <b>${cost + expected_profit_usd:.2f} USDC</b>"
             )
             await self.telegram.send_message(msg)
         elif not self.is_paper_mode():

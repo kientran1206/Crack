@@ -53,15 +53,24 @@ class TelegramNotifier:
         url = trade_info.get('url', '')
         link_str = f"\n🔗 <b>Kiểm chứng sàn:</b> <a href=\"{url}\">Mở trang thị trường</a>" if url else ""
 
+        entry_cost = trade_info.get('entry_cost', 0.0)
+        net_pnl = trade_info.get('net_pnl', 0.0)
+        roi_pct = trade_info.get('roi_pct', 0.0)
+        new_balance = trade_info.get('new_balance', 0.0)
+
         msg = (
             f"🔔 <b>[V] KÈO ARBITRAGE VỪA KHỚP TỰ ĐỘNG!</b>\n\n"
             f"🎯 <b>Thị trường:</b> {trade_info.get('market')}\n"
-            f"⏱️ <b>Kỳ hạn thi đấu:</b> <code>{horizon}</code>\n"
-            f"⚡ <b>Chiến lược:</b> {trade_info.get('strategy')}\n"
-            f"💵 <b>Vốn vào lệnh:</b> ${trade_info.get('entry_cost'):.2f} USDC\n"
-            f"💰 <b>Lãi ròng ăn chắc:</b> +${trade_info.get('net_pnl'):.3f} USDC (ROI: +{trade_info.get('roi_pct'):.2f}%)\n"
-            f"📊 <b>Số dư khả dụng:</b> <b>${trade_info.get('new_balance'):.2f} USDC</b>\n"
-            f"⏰ <i>Thời gian tick: {trade_info.get('timestamp')}</i>"
+            f"⚡ <b>Chiến lược:</b> <code>{trade_info.get('strategy')}</code>\n\n"
+            f"💵 <b>ĐÃ VÀO BAO NHIÊU:</b>\n"
+            f"  • Vốn vào lệnh: <b>${entry_cost:.2f} USDC</b>\n"
+            f"  • Số dư ví còn lại: <b>${new_balance:.2f} USDC</b>\n\n"
+            f"📍 <b>MỐC ĐỐI CHIẾU:</b>\n"
+            f"  • Kỳ hạn thi đấu: <code>{horizon}</code>\n"
+            f"  • Thời gian khớp: <code>{trade_info.get('timestamp')}</code>\n\n"
+            f"💰 <b>LỢI NHUẬN DỰ KIẾN:</b>\n"
+            f"  • Lãi ròng ăn chắc: <b>+${net_pnl:.3f} USDC</b>\n"
+            f"  • Tỷ suất sinh lời (ROI): <b>+{roi_pct:.2f}%</b>"
             f"{link_str}"
         )
         await self.send_message(msg)
