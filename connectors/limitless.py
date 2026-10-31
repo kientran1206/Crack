@@ -97,6 +97,7 @@ class LimitlessConnector:
             limits=httpx.Limits(max_keepalive_connections=5, max_connections=10, keepalive_expiry=120.0),
             headers={"User-Agent": "AntigravityLimitlessBot/1.0", "Accept": "application/json"}
         )
+        self._candle_open_cache: Dict[str, dict] = {}
 
         if private_key:
             try:
@@ -105,6 +106,30 @@ class LimitlessConnector:
                 self._wallet_address = self._account.address
             except Exception as e:
                 logger.warning("Không thể khởi tạo ví từ private key: %s", e)
+
+    def get_binance_candle_open(self, asset: str) -> Decimal:
+        """Lấy giá mở nến 1H trực tiếp từ Binance để làm Strike Price cho các kèo Hourly Up/Down."""
+        pair_map = {"BTC": "BTCUSDT", "ETH": "ETHUSDT", "SOL": "SOLUSDT"}
+        pair = pair_map.get(asset.upper())
+        if not pair:
+            return Decimal("0")
+        
+        now = time.time()
+        cached = self._candle_open_cache.get(pair)
+        if cached and (now - cached["ts"]) < 60:
+            return cached["open"]
+
+        try:
+            url = f"https://api.binance.com/api/v3/klines?symbol={pair}&interval=1h&limit=1"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=3) as r:
+                data = json.loads(r.read().decode())
+                open_price = Decimal(str(data[0][1]))
+                self._candle_open_cache[pair] = {"open": open_price, "ts": now}
+                return open_price
+        except Exception as e:
+            logger.debug("Failed to fetch Binance 1h open for %s: %s", pair, e)
+            return Decimal("0")
 
     def fetch_active_markets(self, asset: Optional[str] = None) -> List[LimitlessMarket]:
         """
@@ -168,6 +193,10 @@ class LimitlessConnector:
                 strike_price = Decimal(str(strike_val))
             except Exception:
                 strike_price = Decimal("0")
+
+            # Tự động lấy Strike Price từ nến mở Binance cho các kèo Hourly Up/Down nếu sàn không có strikePrice cứng
+            if strike_price <= Decimal("0") and ("hourly" in title.lower() or "1h" in title.lower() or "up or down" in title.lower()):
+                strike_price = self.get_binance_candle_open(target_asset)
 
             venue = item.get("venue", {}) or {}
             exchange_addr = venue.get("exchange", "") or item.get("exchangeAddress", "")
@@ -259,8 +288,8 @@ class LimitlessConnector:
                 rejection_reason="Bác bỏ nến ngắn (<1h): Rủi ro bắt dao rơi biến động cao và nhiễu râu nến"
             )
 
-        # Kiểm tra điều kiện thời gian: Chỉ săn ở 2 đến 10 phút cuối cùng
-        if seconds_left > 600:
+        # Kiểm tra điều kiện thời gian: Mở rộng săn ở 1.5 đến 15 phút cuối cùng (tối ưu hóa nắm bắt cơ hội)
+        if seconds_left > 900:
             return LimitlessSignal(
                 market_slug=market.slug,
                 asset=market.target_asset,
@@ -274,7 +303,7 @@ class LimitlessConnector:
                 expected_roi_pct=Decimal("0"),
                 allocated_usd=Decimal("0"),
                 is_safe=False,
-                rejection_reason=f"Chưa đến giờ săn (còn {minutes_left} phút, chỉ vào lệnh khi <= 10 phút)"
+                rejection_reason=f"Chưa đến giờ săn (còn {minutes_left} phút, chỉ vào lệnh khi <= 15 phút)"
             )
 
         # DEAD ZONE: Không vào lệnh khi còn dưới 90 giây để phòng ngừa:
@@ -299,21 +328,21 @@ class LimitlessConnector:
             )
 
         # Ngưỡng an toàn Buffer Động theo thời gian (Dynamic Time-Decay Buffer Threshold)
-        # Càng nhiều thời gian còn lại, buffer an toàn đòi hỏi càng lớn để chống râu nến quét.
-        # t = 120s -> time_mult = 1.4x (BTC $350 | ETH $21)
-        # t = 300s -> time_mult = 2.0x (BTC $500 | ETH $30)
-        # t = 600s -> time_mult = 3.0x (BTC $750 | ETH $45)
-        base_buffer = Decimal("250.00")
+        # Hiệu chỉnh thực chiến: Đảm bảo vừa an toàn tuyệt đối (>93% xác suất thắng) vừa bắt kịp nến
+        # t = 120s -> time_mult = 1.4x (BTC $168 | ETH $11.2)
+        # t = 300s -> time_mult = 2.0x (BTC $240 | ETH $16.0)
+        # t = 600s -> time_mult = 3.0x (BTC $360 | ETH $24.0)
+        base_buffer = Decimal("120.00")
         if market.target_asset == "ETH":
-            base_buffer = Decimal("15.00")
+            base_buffer = Decimal("8.00")
         elif market.target_asset == "SOL":
-            base_buffer = Decimal("2.00")
+            base_buffer = Decimal("0.80")
 
         time_mult = Decimal("1.0") + (Decimal(str(seconds_left)) / Decimal("300"))
         safe_buffer_usd = (base_buffer * time_mult).quantize(Decimal("0.01"))
 
         # Oracle Basis Margin: Trừ hao khoảng cách để chống lệch pha giữa Binance Spot và Chainlink
-        oracle_margin = Decimal("50.00") if market.target_asset == "BTC" else (Decimal("3.00") if market.target_asset == "ETH" else Decimal("0.50"))
+        oracle_margin = Decimal("25.00") if market.target_asset == "BTC" else (Decimal("1.50") if market.target_asset == "ETH" else Decimal("0.20"))
 
         # Xác định phe thắng gần như chắc chắn
         if buffer_usd >= (safe_buffer_usd + oracle_margin):

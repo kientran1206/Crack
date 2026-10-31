@@ -179,13 +179,14 @@ class QuantitativeArbitrageEngine:
         # =====================================================================
         # 1. 100% REAL LIVE POLYMARKET CLOB ORDERBOOK ARBITRAGE
         # =====================================================================
-        for m in self.poly.active_markets[:20]:
+        # Quét toàn bộ vũ trụ thị trường Polymarket thay vì chỉ lấy 20 cặp đầu
+        for m in self.poly.active_markets:
             try:
                 y_ask = m.get("yes_ask")
                 n_ask = m.get("no_ask")
                 if y_ask and n_ask and y_ask > 0 and n_ask > 0:
                     combined = Decimal(str(y_ask)) + Decimal(str(n_ask))
-                    if combined < Decimal("0.985"):
+                    if combined < Decimal("0.992"):
                         spread_pct = ((Decimal("1.0") - combined) * Decimal("100")).quantize(Decimal("0.01"))
                         target_shares = self.ledger.calculate_position_size(
                             unit_cost=combined,
