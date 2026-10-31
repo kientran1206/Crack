@@ -14,12 +14,13 @@ from decimal import Decimal
 import json
 import logging
 import time
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Set
 import urllib.request
 import websockets
 
 from config import CONFIG
 from core.paper_database import PaperDatabase
+from core.ledger import TradeRecord
 
 try:
     from prediction_bot.connectors.limitless import LimitlessConnector, LimitlessMarket, LimitlessSignal
@@ -68,6 +69,9 @@ class LimitlessArbitrageWatcher:
         self._last_market_refresh = 0
         self._active_markets: List[LimitlessMarket] = []
         self._market_by_slug: Dict[str, LimitlessMarket] = {}
+        # Concurrency Lock & In-Memory Entry Set chống triệt để TOCTOU Race Condition
+        self._entry_lock = asyncio.Lock()
+        self._pending_entries: Set[str] = set()
 
     def is_paper_mode(self) -> bool:
         """
@@ -119,27 +123,37 @@ class LimitlessArbitrageWatcher:
     async def execute_paper_entry(self, sig: LimitlessSignal, market: LimitlessMarket) -> bool:
         """
         Thực thi vào lệnh Paper Trading 100% như thật:
-        1. Kiểm tra giới hạn số vị thế mở đồng thời (tối đa 3).
-        2. Phạt trễ 200ms mô phỏng ký ví và gửi giao dịch RPC.
-        3. Khóa vốn thực tế vào Escrow (không cộng lãi ngay).
-        4. Lưu trữ trạng thái OPEN vào SQLite.
-        5. Thông báo chi tiết lên Telegram.
+        1. Khóa mutex lock async và kiểm tra trùng lặp in-memory (Triệt tiêu TOCTOU Race Condition).
+        2. Kiểm tra giới hạn số vị thế mở đồng thời (tối đa 3).
+        3. Phạt trễ 200ms mô phỏng ký ví và gửi giao dịch RPC.
+        4. Khóa vốn thực tế vào Escrow (không cộng lãi ngay).
+        5. Lưu trữ trạng thái OPEN vào SQLite.
+        6. Thông báo chi tiết lên Telegram.
         """
-        # Kiểm tra trùng lặp: nếu thị trường này đã có lệnh OPEN thì không vào thêm
-        open_positions = self.db.get_open_positions()
-        for pos in open_positions:
-            if pos["market_slug"] == market.slug:
+        async with self._entry_lock:
+            # 1. Kiểm tra trùng lặp tức thì trên bộ nhớ (In-Memory Guard)
+            if market.slug in self._pending_entries:
                 return False
 
-        # Kiểm soát rủi ro vốn: Tối đa MAX_CONCURRENT_PAPER_POSITIONS vị thế cùng lúc
-        if len(open_positions) >= CONFIG.MAX_CONCURRENT_PAPER_POSITIONS:
-            logger.info("Từ chối vào lệnh %s: Đã đạt giới hạn %d vị thế mở cùng lúc.", market.slug, CONFIG.MAX_CONCURRENT_PAPER_POSITIONS)
-            return False
+            # 2. Kiểm tra trùng lặp trong cơ sở dữ liệu SQLite
+            open_positions = self.db.get_open_positions()
+            for pos in open_positions:
+                if pos["market_slug"] == market.slug:
+                    self._pending_entries.add(market.slug)
+                    return False
 
-        cost = sig.allocated_usd
-        if self.ledger and self.ledger.free_balance < cost:
-            logger.info("Từ chối vào lệnh %s: Số dư khả dụng không đủ ($%.2f < $%.2f).", market.slug, self.ledger.free_balance, cost)
-            return False
+            # 3. Kiểm soát rủi ro vốn: Tối đa MAX_CONCURRENT_PAPER_POSITIONS vị thế cùng lúc
+            if len(open_positions) >= CONFIG.MAX_CONCURRENT_PAPER_POSITIONS:
+                logger.info("Từ chối vào lệnh %s: Đã đạt giới hạn %d vị thế mở cùng lúc.", market.slug, CONFIG.MAX_CONCURRENT_PAPER_POSITIONS)
+                return False
+
+            cost = sig.allocated_usd
+            if self.ledger and self.ledger.free_balance < cost:
+                logger.info("Từ chối vào lệnh %s: Số dư khả dụng không đủ ($%.2f < $%.2f).", market.slug, self.ledger.free_balance, cost)
+                return False
+
+            # Ghi nhận market.slug vào pending entries
+            self._pending_entries.add(market.slug)
 
         # Tốc độ vi xử lý cao nhất: chỉ sleep nếu latency > 0, mặc định 0ms (thực thi tức thì)
         latency_ms = getattr(CONFIG, "SIMULATED_EXECUTION_LATENCY_MS", 0)
@@ -246,7 +260,17 @@ class LimitlessArbitrageWatcher:
 
                         settled_spot = await self.fetch_true_settlement_price(asset)
                         if settled_spot <= Decimal("0"):
-                            settled_spot = self.spot_prices.get(asset, strike)
+                            settled_spot = self.spot_prices.get(asset, Decimal("0"))
+
+                        # PHÒNG NGỪA BẪY QUYẾT TOÁN SAI (Settlement Network Safety Guard):
+                        # Nếu Binance API bị timeout hoặc mất mạng không lấy được giá chốt (hoặc giá == 0),
+                        # TUYỆT ĐỐI KHÔNG tự động xử thua; chuyển sang chờ vòng quét kế tiếp (Retry sau 5s).
+                        if settled_spot <= Decimal("0") or settled_spot == strike:
+                            logger.warning(
+                                "Chưa có giá đóng nến xác thực cho %s (Spot: %s, Strike: %s). Chờ retry vòng sau...",
+                                pos_id, settled_spot, strike
+                            )
+                            continue
 
                         # Phán quyết Thắng / Thua theo quy chuẩn Oracle
                         is_win = False
@@ -255,6 +279,9 @@ class LimitlessArbitrageWatcher:
                         elif side == "DOWN" and settled_spot < strike:
                             is_win = True
 
+                        # Giải phóng in-memory slug để cho phép đánh các chu kỳ nến tiếp theo
+                        self._pending_entries.discard(pos.get("market_slug", ""))
+
                         if is_win:
                             outcome = "WIN"
                             payout = shares * Decimal("1.00")
@@ -262,14 +289,37 @@ class LimitlessArbitrageWatcher:
                             gas_fee = Decimal("0.001")           # Phí L2 gas Base
                             net_pnl = payout - cost - taker_fees - gas_fee
                             
-                            # Giải phóng vốn khóa và cộng lãi ròng trên Sổ cái
+                            # Cập nhật Sổ cái chuẩn mực & ghi nhận TradeRecord
                             if self.ledger:
-                                self.ledger.locked_balance = max(Decimal("0.00"), self.ledger.locked_balance - cost)
-                                self.ledger.total_balance += (payout - cost - taker_fees - gas_fee)
-                                self.ledger.free_balance = self.ledger.total_balance - self.ledger.locked_balance
-                                self.ledger.winning_trades += 1
-                                self.ledger.total_pnl += net_pnl
-                                self.ledger.active_reservations.pop(pos_id, None)
+                                trade_rec = TradeRecord(
+                                    trade_id=pos_id,
+                                    timestamp_iso=datetime.now(timezone.utc).isoformat(),
+                                    strategy="LIMITLESS_CONVERGENCE",
+                                    platform="Limitless Exchange (Base L2)",
+                                    gross_cost=cost,
+                                    payout=payout,
+                                    fees_paid=taker_fees,
+                                    gas_paid=gas_fee,
+                                    net_pnl=net_pnl,
+                                    roi_pct=((net_pnl / cost) * Decimal("100")).quantize(Decimal("0.01")),
+                                    status="CLOSED"
+                                )
+                                if pos_id in self.ledger.active_reservations:
+                                    self.ledger.commit_settlement(
+                                        opp_id=pos_id,
+                                        gross_cost=cost,
+                                        payout=payout,
+                                        fees_paid=taker_fees,
+                                        gas_paid=gas_fee,
+                                        trade_record=trade_rec
+                                    )
+                                else:
+                                    self.ledger.locked_balance = max(Decimal("0.00"), self.ledger.locked_balance - cost)
+                                    self.ledger.total_balance += net_pnl
+                                    self.ledger.free_balance = self.ledger.total_balance - self.ledger.locked_balance
+                                    self.ledger.winning_trades += 1
+                                    self.ledger.total_pnl += net_pnl
+                                    self.ledger.trades.insert(0, trade_rec)
 
                             self.db.settle_position(
                                 position_id=pos_id,
@@ -297,16 +347,41 @@ class LimitlessArbitrageWatcher:
                         else:
                             outcome = "LOSS"
                             payout = Decimal("0.00")
+                            taker_fees = Decimal("0.00")
+                            gas_fee = Decimal("0.00")
                             net_pnl = -cost
 
-                            # Trừ sạch vốn cược trên Sổ cái (bị phạt mất tiền)
+                            # Cập nhật Sổ cái chuẩn mực & ghi nhận TradeRecord khi thua
                             if self.ledger:
-                                self.ledger.locked_balance = max(Decimal("0.00"), self.ledger.locked_balance - cost)
-                                self.ledger.total_balance -= cost
-                                self.ledger.free_balance = self.ledger.total_balance - self.ledger.locked_balance
-                                self.ledger.losing_trades += 1
-                                self.ledger.total_pnl += net_pnl
-                                self.ledger.active_reservations.pop(pos_id, None)
+                                trade_rec = TradeRecord(
+                                    trade_id=pos_id,
+                                    timestamp_iso=datetime.now(timezone.utc).isoformat(),
+                                    strategy="LIMITLESS_CONVERGENCE",
+                                    platform="Limitless Exchange (Base L2)",
+                                    gross_cost=cost,
+                                    payout=Decimal("0.00"),
+                                    fees_paid=Decimal("0.00"),
+                                    gas_paid=Decimal("0.00"),
+                                    net_pnl=net_pnl,
+                                    roi_pct=Decimal("-100.00"),
+                                    status="CLOSED"
+                                )
+                                if pos_id in self.ledger.active_reservations:
+                                    self.ledger.commit_settlement(
+                                        opp_id=pos_id,
+                                        gross_cost=cost,
+                                        payout=Decimal("0.00"),
+                                        fees_paid=Decimal("0.00"),
+                                        gas_paid=Decimal("0.00"),
+                                        trade_record=trade_rec
+                                    )
+                                else:
+                                    self.ledger.locked_balance = max(Decimal("0.00"), self.ledger.locked_balance - cost)
+                                    self.ledger.total_balance -= cost
+                                    self.ledger.free_balance = self.ledger.total_balance - self.ledger.locked_balance
+                                    self.ledger.losing_trades += 1
+                                    self.ledger.total_pnl += net_pnl
+                                    self.ledger.trades.insert(0, trade_rec)
 
                             self.db.settle_position(
                                 position_id=pos_id,

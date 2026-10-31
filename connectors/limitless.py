@@ -312,11 +312,11 @@ class LimitlessConnector:
 
         if is_15m:
             max_hunt_seconds = 360  # 6 phút cuối của nến 15m
-            min_dead_seconds = 45   # Vùng chết 45s (tránh reject storm)
+            min_dead_seconds = 60   # Vùng chết 60s (chống giật râu nến phút chót & reject storm)
             time_window_msg = "chỉ vào lệnh khi <= 6 phút (15m market)"
         else:
             max_hunt_seconds = 1800 # 30 phút cuối của nến 1H
-            min_dead_seconds = 90   # Vùng chết 90s
+            min_dead_seconds = 120  # Vùng chết 120s (chống lệch pha Chainlink Streams lúc đóng nến)
             time_window_msg = "chỉ vào lệnh khi <= 30 phút"
 
         # Kiểm tra điều kiện thời gian
@@ -356,40 +356,43 @@ class LimitlessConnector:
             )
 
         # Ngưỡng an toàn Buffer Động theo thời gian (Dynamic Time-Decay Buffer Threshold)
+        # Chuẩn hóa theo phân tích độ lệch chuẩn biến động giá (Sigma Volatility Guard):
+        # Nến 15m (BTC sigma 3m ~$105, ngưỡng an toàn tối thiểu base $65.00 + margin $10.00 = $75.00)
+        # Nến 1H (BTC sigma 15m ~$235, ngưỡng an toàn tối thiểu base $85.00 + margin $15.00 = $100.00)
         if is_15m:
             asset_base_buffers = {
-                "BTC": Decimal("15.00"),
-                "ETH": Decimal("1.20"),
-                "SOL": Decimal("0.10"),
-                "BNB": Decimal("0.25"),
-                "DOGE": Decimal("0.0004"),
-                "XRP": Decimal("0.004")
+                "BTC": Decimal("65.00"),
+                "ETH": Decimal("4.50"),
+                "SOL": Decimal("0.35"),
+                "BNB": Decimal("0.80"),
+                "DOGE": Decimal("0.0012"),
+                "XRP": Decimal("0.012")
             }
             asset_oracle_margins = {
-                "BTC": Decimal("4.00"),
-                "ETH": Decimal("0.30"),
-                "SOL": Decimal("0.03"),
-                "BNB": Decimal("0.10"),
-                "DOGE": Decimal("0.0001"),
-                "XRP": Decimal("0.001")
+                "BTC": Decimal("10.00"),
+                "ETH": Decimal("0.80"),
+                "SOL": Decimal("0.08"),
+                "BNB": Decimal("0.20"),
+                "DOGE": Decimal("0.0003"),
+                "XRP": Decimal("0.003")
             }
             time_mult = Decimal("1.0") + (Decimal(str(seconds_left)) / Decimal("120")) * Decimal("0.3")
         else:
             asset_base_buffers = {
-                "BTC": Decimal("25.00"),
-                "ETH": Decimal("1.80"),
-                "SOL": Decimal("0.15"),
-                "BNB": Decimal("0.40"),
-                "DOGE": Decimal("0.0006"),
-                "XRP": Decimal("0.006")
+                "BTC": Decimal("85.00"),
+                "ETH": Decimal("6.00"),
+                "SOL": Decimal("0.50"),
+                "BNB": Decimal("1.20"),
+                "DOGE": Decimal("0.0020"),
+                "XRP": Decimal("0.020")
             }
             asset_oracle_margins = {
-                "BTC": Decimal("8.00"),
-                "ETH": Decimal("0.60"),
-                "SOL": Decimal("0.05"),
-                "BNB": Decimal("0.20"),
-                "DOGE": Decimal("0.0002"),
-                "XRP": Decimal("0.002")
+                "BTC": Decimal("15.00"),
+                "ETH": Decimal("1.00"),
+                "SOL": Decimal("0.10"),
+                "BNB": Decimal("0.30"),
+                "DOGE": Decimal("0.0005"),
+                "XRP": Decimal("0.005")
             }
             time_mult = Decimal("1.0") + (Decimal(str(seconds_left)) / Decimal("300")) * Decimal("0.5")
 
@@ -424,23 +427,24 @@ class LimitlessConnector:
                 rejection_reason=f"Khoảng cách chưa đủ an toàn ({abs(buffer_usd):.2f} USD < {required_threshold:.2f} USD ngưỡng động + Oracle margin)"
             )
 
-        # Trần giá share Động theo thời gian và độ thuyết phục:
-        # 1. Khi còn > 5 phút (với 15m) hoặc > 15 phút (với 1H): Mua share <= 0.85¢ (đảm bảo lãi >= +17.6%)
+        # Trần giá share An toàn (Strict Risk/Reward Ceiling <= 0.89¢):
+        # 1. Khi còn > 5 phút (với 15m) hoặc > 15 phút (với 1H): Mua share <= 0.83¢ (đảm bảo lãi >= +20.5%)
         # 2. Khi trong cửa sổ săn chính (<= 5 phút với 15m, <= 15 phút với 1H):
-        #    - Nếu Buffer cực lớn (>= 1.5x ngưỡng an toàn): Cho phép mua đến 0.94¢ (lãi >= +6.4% với độ chắc thắng >98.5%)
-        #    - Nếu Buffer lớn (>= 1.2x ngưỡng an toàn): Cho phép mua đến 0.91¢ (lãi >= +9.9%)
-        #    - Bình thường: Mua share <= 0.89¢ (lãi >= +12.35%)
+        #    - Nếu Buffer cực lớn (>= 1.5x ngưỡng an toàn): Cho phép mua đến tối đa 0.89¢ (lãi >= +12.35%, R/R 8:1)
+        #    - Nếu Buffer lớn (>= 1.2x ngưỡng an toàn): Cho phép mua đến 0.87¢ (lãi >= +14.9%)
+        #    - Bình thường: Mua share <= 0.85¢ (lãi >= +17.6%)
+        # Triệt tiêu hoàn toàn mức 0.94¢ để chống bẫy bất đối xứng rủi ro (thua 1 lệnh mất 16 lệnh thắng).
         hunt_main_window = 300 if is_15m else 900
 
         if seconds_left > hunt_main_window:
-            max_allowed_share_price = Decimal("0.85")
+            max_allowed_share_price = Decimal("0.83")
         else:
             if abs(buffer_usd) >= (required_threshold * Decimal("1.5")):
-                max_allowed_share_price = Decimal("0.94")
-            elif abs(buffer_usd) >= (required_threshold * Decimal("1.2")):
-                max_allowed_share_price = Decimal("0.91")
-            else:
                 max_allowed_share_price = Decimal("0.89")
+            elif abs(buffer_usd) >= (required_threshold * Decimal("1.2")):
+                max_allowed_share_price = Decimal("0.87")
+            else:
+                max_allowed_share_price = Decimal("0.85")
 
         if share_price > max_allowed_share_price:
             return LimitlessSignal(

@@ -312,17 +312,43 @@ def test_15m_market_convergence_safe_signal():
 
 def test_high_conviction_dynamic_price_ceiling():
     """
-    Kiểm tra cơ chế nới trần giá share lên 0.94¢ khi Buffer cực lớn (>= 1.5x threshold):
+    Kiểm tra cơ chế chặn trần giá share tối đa 0.89¢ theo phản biện Red-Team & Quant:
     - Nến 1H còn 200s (< 300s).
-    - Strike BTC: $98,000. Spot BTC: $98,250 (Buffer +$250 > 1.5x threshold ~$60).
-    - Giá share: $0.93.
-    - Kỳ vọng: Được chấp thuận (is_safe=True) vì xác suất thắng >98.5%, thu lãi an toàn +7.5%.
+    - Strike BTC: $98,000. Spot BTC: $98,250 (Buffer +$250 > 1.5x threshold).
+    - Khi giá share là $0.89: Được chấp thuận (is_safe=True) vì R/R tối đa 8:1 (đảm bảo lãi >= +12.35%).
+    - Khi giá share là $0.93: Bị từ chối (is_safe=False) vì vi phạm trần 0.89¢, chống bẫy R/R 16:1 tự sát vốn.
     """
     connector = LimitlessConnector(dry_run=True)
     now = int(time.time())
 
-    market_1h = LimitlessMarket(
+    market_safe = LimitlessMarket(
         slug="btc-up-or-down-hourly-conviction",
+        title="BTC Up or Down Hourly",
+        target_asset="BTC",
+        strike_price=Decimal("98000.00"),
+        end_time=now + 200,
+        exchange_address="0x1234567890123456789012345678901234567890",
+        token_id_up=401,
+        token_id_down=402,
+        best_ask_up=Decimal("0.89"),
+        best_ask_down=Decimal("0.11"),
+        volume_24h=Decimal("80000")
+    )
+
+    sig_safe = connector.evaluate_late_cycle_convergence(
+        market=market_safe,
+        current_spot=Decimal("98250.00"),
+        bankroll_usdc=Decimal("10.00")
+    )
+
+    assert sig_safe.is_safe is True
+    assert sig_safe.recommended_side == "UP"
+    assert sig_safe.share_price == Decimal("0.89")
+    assert sig_safe.expected_roi_pct > Decimal("12.0")
+
+    # Kiểm tra chặn giá đắt 0.93¢
+    market_expensive = LimitlessMarket(
+        slug="btc-up-or-down-hourly-expensive",
         title="BTC Up or Down Hourly",
         target_asset="BTC",
         strike_price=Decimal("98000.00"),
@@ -335,14 +361,12 @@ def test_high_conviction_dynamic_price_ceiling():
         volume_24h=Decimal("80000")
     )
 
-    signal = connector.evaluate_late_cycle_convergence(
-        market=market_1h,
+    sig_expensive = connector.evaluate_late_cycle_convergence(
+        market=market_expensive,
         current_spot=Decimal("98250.00"),
         bankroll_usdc=Decimal("10.00")
     )
 
-    assert signal.is_safe is True
-    assert signal.recommended_side == "UP"
-    assert signal.share_price == Decimal("0.93")
-    assert signal.expected_roi_pct > Decimal("7.0")
+    assert sig_expensive.is_safe is False
+    assert "quá cao" in sig_expensive.rejection_reason
 
