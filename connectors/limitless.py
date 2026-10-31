@@ -107,8 +107,8 @@ class LimitlessConnector:
             except Exception as e:
                 logger.warning("Không thể khởi tạo ví từ private key: %s", e)
 
-    def get_binance_candle_open(self, asset: str) -> Decimal:
-        """Lấy giá mở nến 1H trực tiếp từ Binance để làm Strike Price cho các kèo Hourly Up/Down."""
+    def get_binance_candle_open(self, asset: str, interval: str = "1h") -> Decimal:
+        """Lấy giá mở nến trực tiếp từ Binance để làm Strike Price cho các kèo Up/Down."""
         pair_map = {
             "BTC": "BTCUSDT",
             "ETH": "ETHUSDT",
@@ -121,21 +121,22 @@ class LimitlessConnector:
         if not pair:
             return Decimal("0")
         
+        cache_key = f"{pair}_{interval}"
         now = time.time()
-        cached = self._candle_open_cache.get(pair)
-        if cached and (now - cached["ts"]) < 60:
+        cached = self._candle_open_cache.get(cache_key)
+        if cached and (now - cached["ts"]) < 30:
             return cached["open"]
 
         try:
-            url = f"https://api.binance.com/api/v3/klines?symbol={pair}&interval=1h&limit=1"
+            url = f"https://api.binance.com/api/v3/klines?symbol={pair}&interval={interval}&limit=1"
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=3) as r:
                 data = json.loads(r.read().decode())
                 open_price = Decimal(str(data[0][1]))
-                self._candle_open_cache[pair] = {"open": open_price, "ts": now}
+                self._candle_open_cache[cache_key] = {"open": open_price, "ts": now}
                 return open_price
         except Exception as e:
-            logger.debug("Failed to fetch Binance 1h open for %s: %s", pair, e)
+            logger.debug("Failed to fetch Binance %s open for %s: %s", interval, pair, e)
             return Decimal("0")
 
     def fetch_active_markets(self, asset: Optional[str] = None) -> List[LimitlessMarket]:
@@ -207,9 +208,14 @@ class LimitlessConnector:
             except Exception:
                 strike_price = Decimal("0")
 
-            # Tự động lấy Strike Price từ nến mở Binance cho các kèo Hourly Up/Down nếu sàn không có strikePrice cứng
-            if strike_price <= Decimal("0") and ("hourly" in title.lower() or "1h" in title.lower() or "up or down" in title.lower()):
-                strike_price = self.get_binance_candle_open(target_asset)
+            # Tự động lấy Strike Price từ nến mở Binance cho các kèo Up/Down nếu sàn không có strikePrice cứng
+            is_15m = bool(re.search(r'\b(15m|15\s*min|15-min)\b', f"{title.lower()} {slug.lower()}"))
+            is_hourly = bool(re.search(r'\b(hourly|1h|1-hour|up or down)\b', f"{title.lower()} {slug.lower()}"))
+            if strike_price <= Decimal("0"):
+                if is_15m:
+                    strike_price = self.get_binance_candle_open(target_asset, interval="15m")
+                elif is_hourly or "up or down" in title.lower():
+                    strike_price = self.get_binance_candle_open(target_asset, interval="1h")
 
             venue = item.get("venue", {}) or {}
             exchange_addr = venue.get("exchange", "") or item.get("exchangeAddress", "")
@@ -279,12 +285,12 @@ class LimitlessConnector:
         # Vốn < $3 cược $0.25 (10 viên đạn) | Vốn $3-$5 cược $0.35 | Vốn $5-$10 cược $0.50 | Vốn >$10 cược $1.00
         max_bet_amount = calculate_tiered_bet_amount(bankroll_usdc)
 
-        # LOẠI BỎ TRIỆT ĐỂ BẮT DAO RƠI & NẾN NGẮN (Anti-Knife-Catching Regex & Duration Guard):
-        # Nghiêm cấm cược trên nến 5m, 15m, 10m, 30m bằng Regex trên cả title và slug
+        # LOẠI BỎ TRIỆT ĐỂ BẮT DAO RƠI & NẾN SIÊU NGẮN (Anti-Knife-Catching Regex & Duration Guard):
+        # Nghiêm cấm cược trên nến siêu ngắn <15m (5m, 1m, 3m) bằng Regex trên cả title và slug
         title_lower = market.title.lower()
         slug_lower = market.slug.lower()
-        is_short_tf = bool(re.search(r'\b(5m|15m|10m|30m|5\s*min|15\s*min|10\s*min|30\s*min|5-min|15-min)\b', f"{title_lower} {slug_lower}"))
-        if is_short_tf:
+        is_micro_tf = bool(re.search(r'\b(5m|5\s*min|5-min|1m|1\s*min|3m|3\s*min)\b', f"{title_lower} {slug_lower}"))
+        if is_micro_tf:
             return LimitlessSignal(
                 market_slug=market.slug,
                 asset=market.target_asset,
@@ -298,11 +304,23 @@ class LimitlessConnector:
                 expected_roi_pct=Decimal("0"),
                 allocated_usd=Decimal("0"),
                 is_safe=False,
-                rejection_reason="Bác bỏ nến ngắn (<1h): Rủi ro bắt dao rơi biến động cao và nhiễu râu nến"
+                rejection_reason="Bác bỏ nến ngắn (<15m): Rủi ro bắt dao rơi biến động cao và nhiễu râu nến"
             )
 
-        # Kiểm tra điều kiện thời gian: Mở rộng săn ở 1.5 đến 30 phút cuối cùng (tối ưu hóa nắm bắt breakout và giá share rẻ)
-        if seconds_left > 1800:
+        # Phân loại khung thời gian: 15-Minute vs Hourly (1H+)
+        is_15m = bool(re.search(r'\b(15m|15\s*min|15-min)\b', f"{title_lower} {slug_lower}"))
+
+        if is_15m:
+            max_hunt_seconds = 360  # 6 phút cuối của nến 15m
+            min_dead_seconds = 45   # Vùng chết 45s (tránh reject storm)
+            time_window_msg = "chỉ vào lệnh khi <= 6 phút (15m market)"
+        else:
+            max_hunt_seconds = 1800 # 30 phút cuối của nến 1H
+            min_dead_seconds = 90   # Vùng chết 90s
+            time_window_msg = "chỉ vào lệnh khi <= 30 phút"
+
+        # Kiểm tra điều kiện thời gian
+        if seconds_left > max_hunt_seconds:
             return LimitlessSignal(
                 market_slug=market.slug,
                 asset=market.target_asset,
@@ -316,14 +334,11 @@ class LimitlessConnector:
                 expected_roi_pct=Decimal("0"),
                 allocated_usd=Decimal("0"),
                 is_safe=False,
-                rejection_reason=f"Chưa đến giờ săn (còn {minutes_left} phút, chỉ vào lệnh khi <= 30 phút)"
+                rejection_reason=f"Chưa đến giờ săn (còn {minutes_left} phút, {time_window_msg})"
             )
 
-        # DEAD ZONE: Không vào lệnh khi còn dưới 90 giây để phòng ngừa:
-        # 1. Reject storm khi dùng PostOnly
-        # 2. Sai lệch giá (Disagreement) giữa Binance Spot và Chainlink Data Streams
-        # 3. Kẹt lệnh trong hàng đợi khớp của Limitless Orderbook
-        if seconds_left < 90:
+        # DEAD ZONE
+        if seconds_left < min_dead_seconds:
             return LimitlessSignal(
                 market_slug=market.slug,
                 asset=market.target_asset,
@@ -337,39 +352,49 @@ class LimitlessConnector:
                 expected_roi_pct=Decimal("0"),
                 allocated_usd=Decimal("0"),
                 is_safe=False,
-                rejection_reason="Vùng chết (< 90s): Tránh Reject Storm & Lệch pha Chainlink Data Streams"
+                rejection_reason=f"Vùng chết (< {min_dead_seconds}s): Tránh Reject Storm & Lệch pha Chainlink Data Streams"
             )
 
         # Ngưỡng an toàn Buffer Động theo thời gian (Dynamic Time-Decay Buffer Threshold)
-        # Hiệu chuẩn định lượng theo phân tích thực nghiệm 1.000 nến 1M Binance (16 giờ):
-        # Mở rộng cửa sổ săn lên 30 phút để bắt kịp pha breakout nến lúc giá share còn rẻ ($0.65 - $0.85):
-        # - BTC: Base $25.00, Margin $8.00 (t=120s: $38.0 | t=300s: $45.5 | t=900s: $70.5 | t=1500s: $95.5 | t=1800s: $108.0)
-        # - ETH: Base $1.80, Margin $0.60 (t=120s: $2.76 | t=300s: $3.30 | t=900s: $5.10 | t=1500s: $6.90 | t=1800s: $7.80)
-        # - SOL: Base $0.15, Margin $0.05 (t=120s: $0.23 | t=300s: $0.28 | t=900s: $0.43 | t=1800s: $0.65)
-        # - BNB: Base $0.40, Margin $0.20 (t=120s: $0.68 | t=300s: $0.80 | t=900s: $1.20 | t=1800s: $1.80)
-        # - DOGE: Base $0.0006, Margin $0.0002
-        # - XRP: Base $0.006, Margin $0.002
-        asset_base_buffers = {
-            "BTC": Decimal("25.00"),
-            "ETH": Decimal("1.80"),
-            "SOL": Decimal("0.15"),
-            "BNB": Decimal("0.40"),
-            "DOGE": Decimal("0.0006"),
-            "XRP": Decimal("0.006")
-        }
+        if is_15m:
+            asset_base_buffers = {
+                "BTC": Decimal("15.00"),
+                "ETH": Decimal("1.20"),
+                "SOL": Decimal("0.10"),
+                "BNB": Decimal("0.25"),
+                "DOGE": Decimal("0.0004"),
+                "XRP": Decimal("0.004")
+            }
+            asset_oracle_margins = {
+                "BTC": Decimal("4.00"),
+                "ETH": Decimal("0.30"),
+                "SOL": Decimal("0.03"),
+                "BNB": Decimal("0.10"),
+                "DOGE": Decimal("0.0001"),
+                "XRP": Decimal("0.001")
+            }
+            time_mult = Decimal("1.0") + (Decimal(str(seconds_left)) / Decimal("120")) * Decimal("0.3")
+        else:
+            asset_base_buffers = {
+                "BTC": Decimal("25.00"),
+                "ETH": Decimal("1.80"),
+                "SOL": Decimal("0.15"),
+                "BNB": Decimal("0.40"),
+                "DOGE": Decimal("0.0006"),
+                "XRP": Decimal("0.006")
+            }
+            asset_oracle_margins = {
+                "BTC": Decimal("8.00"),
+                "ETH": Decimal("0.60"),
+                "SOL": Decimal("0.05"),
+                "BNB": Decimal("0.20"),
+                "DOGE": Decimal("0.0002"),
+                "XRP": Decimal("0.002")
+            }
+            time_mult = Decimal("1.0") + (Decimal(str(seconds_left)) / Decimal("300")) * Decimal("0.5")
+
         base_buffer = asset_base_buffers.get(market.target_asset, Decimal("1.00"))
-
-        asset_oracle_margins = {
-            "BTC": Decimal("8.00"),
-            "ETH": Decimal("0.60"),
-            "SOL": Decimal("0.05"),
-            "BNB": Decimal("0.20"),
-            "DOGE": Decimal("0.0002"),
-            "XRP": Decimal("0.002")
-        }
         oracle_margin = asset_oracle_margins.get(market.target_asset, Decimal("0.05"))
-
-        time_mult = Decimal("1.0") + (Decimal(str(seconds_left)) / Decimal("300")) * Decimal("0.5")
         safe_buffer_usd = (base_buffer * time_mult).quantize(Decimal("0.0001"))
         required_threshold = safe_buffer_usd + oracle_margin
 
@@ -400,16 +425,24 @@ class LimitlessConnector:
             )
 
         # Trần giá share Động theo thời gian và độ thuyết phục:
-        # 1. Khi còn 15 - 30 phút: Chỉ mua share <= 0.85¢ (đảm bảo lãi >= +17.6%)
-        # 2. Khi còn 5 - 15 phút: Mua share <= 0.89¢ (đảm bảo lãi >= +12.35%)
-        # 3. Khi còn < 5 phút: Nếu Buffer cực lớn (>= 1.5x ngưỡng an toàn), cho phép mua đến 0.92¢ (lãi >= +8.7%)
-        if seconds_left > 900:
+        # 1. Khi còn nhiều thời gian (>15p với 1H, >3p với 15m): Mua share <= 0.85¢ (đảm bảo lãi >= +17.6%)
+        # 2. Khi còn trung bình (5-15p với 1H, 1.5-3p với 15m): Mua share <= 0.89¢ (đảm bảo lãi >= +12.35%)
+        # 3. Khi gần đáo hạn (<5p với 1H, <1.5p với 15m):
+        #    - Nếu Buffer cực lớn (>= 1.5x ngưỡng an toàn): Cho phép mua đến 0.94¢ (lãi >= +6.4% với độ chắc thắng >98.5%)
+        #    - Nếu Buffer lớn (>= 1.2x ngưỡng an toàn): Cho phép mua đến 0.91¢ (lãi >= +9.9%)
+        #    - Bình thường: Mua share <= 0.89¢
+        mid_time_threshold = 180 if is_15m else 900
+        short_time_threshold = 90 if is_15m else 300
+
+        if seconds_left > mid_time_threshold:
             max_allowed_share_price = Decimal("0.85")
-        elif seconds_left > 300:
+        elif seconds_left > short_time_threshold:
             max_allowed_share_price = Decimal("0.89")
         else:
             if abs(buffer_usd) >= (required_threshold * Decimal("1.5")):
-                max_allowed_share_price = Decimal("0.92")
+                max_allowed_share_price = Decimal("0.94")
+            elif abs(buffer_usd) >= (required_threshold * Decimal("1.2")):
+                max_allowed_share_price = Decimal("0.91")
             else:
                 max_allowed_share_price = Decimal("0.89")
 

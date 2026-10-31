@@ -172,8 +172,8 @@ class VirtualStateLedger:
         if capital_ceiling < min_notional or unit_cost <= Decimal("0"):
             return Decimal("0")
         
-        # Max shares affordable under risk ceiling
-        affordable_shares = (capital_ceiling / unit_cost).quantize(Decimal("1"), rounding=ROUND_DOWN)
+        # Max shares affordable under risk ceiling (cho phép mua share lẻ 2 chữ số thập phân cho vốn nhỏ $10)
+        affordable_shares = (capital_ceiling / unit_cost).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
         # Clamped by market depth
         optimal_shares = min(affordable_shares, max_market_shares)
         

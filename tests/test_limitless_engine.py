@@ -270,3 +270,79 @@ def test_tiered_position_sizing_for_different_bankrolls():
     # Vốn > $25
     assert calculate_tiered_bet_amount(Decimal("50.00")) == Decimal("2.50")
     assert calculate_tiered_bet_amount(Decimal("100.00")) == Decimal("3.00") # Cap at $3.00
+
+
+def test_15m_market_convergence_safe_signal():
+    """
+    Kiểm tra kèo 15-Minute Market (Up or Down - 15 Min):
+    - Thời gian: Còn 180s (3 phút).
+    - Strike ETH: $2,250. Spot ETH: $2,260 (Buffer +$10).
+    - Giá share: $0.85 (lãi +17.6%).
+    - Kỳ vọng: Được chấp thuận (is_safe=True), không bị chặn bởi bộ lọc nến ngắn.
+    """
+    connector = LimitlessConnector(dry_run=True)
+    now = int(time.time())
+
+    market_15m = LimitlessMarket(
+        slug="eth-up-or-down-15-min-exp",
+        title="ETH Up or Down - 15 Min",
+        target_asset="ETH",
+        strike_price=Decimal("2250.00"),
+        end_time=now + 180,  # 3 phút cuối
+        exchange_address="0x1234567890123456789012345678901234567890",
+        token_id_up=301,
+        token_id_down=302,
+        best_ask_up=Decimal("0.85"),
+        best_ask_down=Decimal("0.15"),
+        volume_24h=Decimal("15000")
+    )
+
+    signal = connector.evaluate_late_cycle_convergence(
+        market=market_15m,
+        current_spot=Decimal("2260.00"), # Buffer +$10 > required ~$2.2
+        bankroll_usdc=Decimal("10.00")
+    )
+
+    assert signal.is_safe is True
+    assert signal.recommended_side == "UP"
+    assert signal.share_price == Decimal("0.85")
+    assert signal.expected_roi_pct > Decimal("17.0")
+    assert signal.allocated_usd == Decimal("0.50")
+
+
+def test_high_conviction_dynamic_price_ceiling():
+    """
+    Kiểm tra cơ chế nới trần giá share lên 0.94¢ khi Buffer cực lớn (>= 1.5x threshold):
+    - Nến 1H còn 200s (< 300s).
+    - Strike BTC: $98,000. Spot BTC: $98,250 (Buffer +$250 > 1.5x threshold ~$60).
+    - Giá share: $0.93.
+    - Kỳ vọng: Được chấp thuận (is_safe=True) vì xác suất thắng >98.5%, thu lãi an toàn +7.5%.
+    """
+    connector = LimitlessConnector(dry_run=True)
+    now = int(time.time())
+
+    market_1h = LimitlessMarket(
+        slug="btc-up-or-down-hourly-conviction",
+        title="BTC Up or Down Hourly",
+        target_asset="BTC",
+        strike_price=Decimal("98000.00"),
+        end_time=now + 200,
+        exchange_address="0x1234567890123456789012345678901234567890",
+        token_id_up=401,
+        token_id_down=402,
+        best_ask_up=Decimal("0.93"),
+        best_ask_down=Decimal("0.07"),
+        volume_24h=Decimal("80000")
+    )
+
+    signal = connector.evaluate_late_cycle_convergence(
+        market=market_1h,
+        current_spot=Decimal("98250.00"),
+        bankroll_usdc=Decimal("10.00")
+    )
+
+    assert signal.is_safe is True
+    assert signal.recommended_side == "UP"
+    assert signal.share_price == Decimal("0.93")
+    assert signal.expected_roi_pct > Decimal("7.0")
+
