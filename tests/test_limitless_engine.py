@@ -66,7 +66,7 @@ def test_late_cycle_convergence_safe_signal():
 
 def test_rejection_buffer_too_thin():
     """
-    Kịch bản: Còn 5 phút, Strike BTC $98,000, Spot $98,100 (Buffer +$100 < $250 ngưỡng an toàn).
+    Kịch bản: Còn 5 phút, Strike BTC $98,000, Spot $98,030 (Buffer +$30 < $64.00 ngưỡng an toàn thực nghiệm).
     Kỳ vọng: Bác bỏ tín hiệu do rủi ro giật râu nến (Buffer too thin).
     """
     connector = LimitlessConnector(dry_run=True)
@@ -88,7 +88,7 @@ def test_rejection_buffer_too_thin():
 
     signal = connector.evaluate_late_cycle_convergence(
         market=market,
-        current_spot=Decimal("98100"),  # Chỉ cách $100
+        current_spot=Decimal("98030"),  # Chỉ cách $30 (< $64.00)
         bankroll_usdc=Decimal("10.00")
     )
 

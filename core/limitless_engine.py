@@ -35,7 +35,7 @@ class LimitlessArbitrageWatcher:
     Watcher liên tục lắng nghe Binance WebSocket, đối soát Orderbook Limitless,
     khóa vốn vào lệnh và quyết toán sống khi nến đóng.
     """
-    BINANCE_WS_URL = "wss://stream.binance.com:9443/ws/btcusdt@ticker/ethusdt@ticker/solusdt@ticker"
+    BINANCE_WS_URL = "wss://stream.binance.com:9443/ws/btcusdt@ticker/ethusdt@ticker/solusdt@ticker/bnbusdt@ticker/dogeusdt@ticker/xrpusdt@ticker"
 
     def __init__(
         self,
@@ -59,7 +59,10 @@ class LimitlessArbitrageWatcher:
         self.spot_prices: Dict[str, Decimal] = {
             "BTC": Decimal("0"),
             "ETH": Decimal("0"),
-            "SOL": Decimal("0")
+            "SOL": Decimal("0"),
+            "BNB": Decimal("0"),
+            "DOGE": Decimal("0"),
+            "XRP": Decimal("0")
         }
         self.is_running = False
         self._last_market_refresh = 0
