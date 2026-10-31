@@ -425,19 +425,15 @@ class LimitlessConnector:
             )
 
         # Trần giá share Động theo thời gian và độ thuyết phục:
-        # 1. Khi còn nhiều thời gian (>15p với 1H, >3p với 15m): Mua share <= 0.85¢ (đảm bảo lãi >= +17.6%)
-        # 2. Khi còn trung bình (5-15p với 1H, 1.5-3p với 15m): Mua share <= 0.89¢ (đảm bảo lãi >= +12.35%)
-        # 3. Khi gần đáo hạn (<5p với 1H, <1.5p với 15m):
+        # 1. Khi còn > 5 phút (với 15m) hoặc > 15 phút (với 1H): Mua share <= 0.85¢ (đảm bảo lãi >= +17.6%)
+        # 2. Khi trong cửa sổ săn chính (<= 5 phút với 15m, <= 15 phút với 1H):
         #    - Nếu Buffer cực lớn (>= 1.5x ngưỡng an toàn): Cho phép mua đến 0.94¢ (lãi >= +6.4% với độ chắc thắng >98.5%)
         #    - Nếu Buffer lớn (>= 1.2x ngưỡng an toàn): Cho phép mua đến 0.91¢ (lãi >= +9.9%)
-        #    - Bình thường: Mua share <= 0.89¢
-        mid_time_threshold = 180 if is_15m else 900
-        short_time_threshold = 90 if is_15m else 300
+        #    - Bình thường: Mua share <= 0.89¢ (lãi >= +12.35%)
+        hunt_main_window = 300 if is_15m else 900
 
-        if seconds_left > mid_time_threshold:
+        if seconds_left > hunt_main_window:
             max_allowed_share_price = Decimal("0.85")
-        elif seconds_left > short_time_threshold:
-            max_allowed_share_price = Decimal("0.89")
         else:
             if abs(buffer_usd) >= (required_threshold * Decimal("1.5")):
                 max_allowed_share_price = Decimal("0.94")
